@@ -1,7 +1,9 @@
 import jax.numpy as jnp
 import jax.scipy.special
 import jax.random as jr
-import tensorflow_probability as tfp
+import numpy as onp
+
+from tensorflow_probability.substrates import jax as tfp
 
 from util import log_bessel_iv_asymptotic, log_sinh, coth
 
@@ -44,7 +46,6 @@ def vmf_mean_3d(mean_direction, concentration):
     """Calculate the mean of a 3D vMF distribution.
     
     The mean is given by
-
     .. math:
          \mathbb{E}[p(u)] = (\coth(\kappa) - \frac{1}{\kappa}) \nu
 
@@ -65,11 +66,57 @@ def vmf_mean_3d(mean_direction, concentration):
     resultant_length = coth(concentration) - 1./concentration
     return resultant_length[...,None] * mean_direction
 
-def log_vmf_normalizer_2d(mean_direction, concentration):
-    raise NotImplementedError
+def log_vmf_normalizer_2d(concentration):
+    """Calculate the log normalizer of the 2D vMF distribution:
 
-def log_vmf_normalizer_3d(mean_direction, concentration):
-    raise NotImplementedError
+    The normalizing constant for the 2D vMF distribution is given by
+    .. math:
+        C_2(\kappa) = \frac{1}{2\pi I_0(\kappa)},
+
+    where :math:`I_0` is the modifid Bessel function of the first kind of
+    order 0.
+
+    As :math:`\kappa\rightarrow 0`, then :math:`I_0(\kappa) \rightarrow 1`
+    and :math:`\log I_0 (\kappa) \rightarrow 0`. So when the vMF distribution is
+    uniform over the circle, namely when :math:`\kappa=0` or is otherwise small,
+    then log normalizer is the negative entropy of a uniform distribution
+    over the circle:
+    .. math:
+        \log C_3(\kappa=0) = -log(2 \pi).
+
+    As :math:`\kappa\rightarrow \infty`, an exponential approximation can be
+    used to estimate the value of :math:`I_0(\kappa)`. The logarithm of this
+    function is used to calculate the log normalizer for large concentrations.
+    """
+
+    log_i0 = jnp.log(jax.scipy.special.i0(concentration))
+    log_i0 = jnp.where(jnp.isposinf(log_i0),
+                       log_bessel_iv_asymptotic(concentration),
+                       log_i0
+                      )
+    return - jnp.log(2 * jnp.pi) - log_i0
+
+def log_vmf_normalizer_3d(concentration):
+    """Calculate the log normalizer of the 3D vMF distribution:
+
+    The normalizing constant of the 3D vMF distribution is given by 
+    .. math:
+        C_3(\kappa) = \frac{\kappa}{2 \pi \sinh(\kappa)}.
+
+    As :math:`\kappa\rightarrow 0`, then :math:`\sinh(\kappa) \rightarrow \kappa`.
+    So when the vMF distribution is uniform over the sphere, namely when
+    :math:`\kappa=0` or is otherwise small, then log normalizer is the
+    negative entropy of a uniform distribution over the sphere,
+    .. math:
+        \log C_3(\kappa=0) = -log(4 \pi).
+    """
+    log_c = - jnp.log(4 * jnp.pi) * jnp.ones_like(concentration)
+
+    log_c += jnp.where(concentration >= CONCENTRATION_REGULARIZER,
+                       jnp.log(concentration) - log_sinh(concentration),
+                       jnp.zeros_like(concentration) 
+                      )
+    return log_c
 
 # ---------------------------------------------------------------------------
 
@@ -154,8 +201,8 @@ class vonMisesFisherGaussian:
 
         # Specify batch and event shapes
         self._dim = self._mean_direction.shape[-1]
-        assert self._dim == 2 or self._dim == 3, \
-            "Dimension not supported, expected dim={2,3}, received {}".format(self.dim)
+        if self._dim not in [2,3]:
+            raise ValueError('Dimension not supported. Expected `mean_direction.shape[-1]` to be 2 or 3, received {}'.format(self._dim))
         
         self._reinterpreted_batch_ndim = 0 if reinterpreted_batch_ndim is None \
                                             else reinterpreted_batch_ndim
@@ -231,46 +278,45 @@ class vonMisesFisherGaussian:
         
         # Each position sample is is located at `radius * u + center`,
         # with diagonal covariance specified by `variance`
-        pos_samples = jnp.sqrt(self.variance) * jr.normal(seed_2, shape=vmf_samples.shape, dtype=self.dtype)
-        pos_samples += self.radius * vmf_samples + self.center  # Add mean
+        pos_samples = jnp.sqrt(self.variance)[...,None] * jr.normal(seed_2, shape=vmf_samples.shape, dtype=self.dtype)
+        pos_samples += self.radius[...,None] * vmf_samples + self.center  # Add mean
 
         return pos_samples
 
     # ==========================================================================
 
     def vmf_mean(self,):
-        """Mean of vMF distribution. Specific calculation method is optimized for
-        each dimension.
-        """
+        """Calculate the mean of the vMF distribution associated with this vMFG distribution instance."""
         _vmf_mean = vmfg_factory.get_function("VMF_MEAN", self.dim)
         return _vmf_mean(self.mean_direction, self.concentration)
 
-    def log_vmf_normalizer(self,):
-        """Calculates the log normalization constant of the vMF distribution.
-        Specific calculation method is dimension dependent
-        """
+    def log_vmf_normalizer(self, concentration):
+        """Calculate the vMF log normalization constant corresponding to this vMFG instance's dimension."""
         _log_vmf_normalizer = vmfg_factory.get_function("LOG_VMF_NORMALIZER", self.dim)
-        return _log_vmf_normalizer(self.concentration)
+        return _log_vmf_normalizer(concentration)
 
     # ==========================================================================
 
-    def log_prob(self, x, c=None):
-        c = self.center if c is None else c
-        delta = x - c
+    def log_prob(self, delta):
+        """Calculate log probability of center-subtracted samples `delta`."""
+        return self._log_prob(delta)
+
+    def log_prob_given_c(self, x):
+        """Calculate log probability of samples `x` about their center."""
+        delta = x - self.center
         return self._log_prob(delta)
 
     def _log_prob(self, delta):
         """Calculate log probability of center-subtracted samples under vMFG distribution
 
         Parameters:
-            delta: ndarray, shape (...,B1,...Bn,E1,...D))
+            delta: ndarray, shape (...,B1,...Bn,E1,...Em,D))
         
         Returns:
             log_p: ndarray, shape(...,B1,...Bn)
 
         Notes:
-        The probabiity density function of the vMFG distribution is
-
+        The probabiity density function of the vMFG distribution is given by
         .. math:
             p(x; \nu, \kappa, c, \rho, \sigma^2)
             = \frac{C_d(\kappa)}{C_d(\Vert \kappa \nu - (x-c) \rho/\sigma^2 \Vert_2)}
@@ -279,7 +325,7 @@ class vonMisesFisherGaussian:
         
         D = delta.shape[-1]
 
-        # shape (...,B,E-1)
+        # shape (...,B1,...Bn,E1,....Em)
         conc_tilde = self.mean_direction * self.concentration[...,None]
         conc_tilde += delta * (self.radius/self.variance)[...,None]
         conc_tilde = jnp.linalg.norm(conc_tilde, axis=-1)
@@ -294,5 +340,6 @@ class vonMisesFisherGaussian:
         log_p = log_p[...,None]
         reduce_axes = tuple(-(1+onp.arange(self.event_ndim)))
         
+        # shape (..., B1,...,Bn,)
         return jnp.sum(log_p, axis=reduce_axes)
     
