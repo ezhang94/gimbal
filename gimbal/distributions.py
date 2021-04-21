@@ -267,7 +267,7 @@ class vonMisesFisherGaussian:
             seed : jax.random.PRNGKey
         
         Returns:
-            pos_samploes: ndarray, shape (*sample_shape, *batch_shape, *event_shape)
+            pos_samples: ndarray, shape (*sample_shape, *batch_shape, *event_shape)
         """
         
         seed_1, seed_2 = jr.split(seed)
