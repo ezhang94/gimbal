@@ -5,7 +5,7 @@ import numpy as onp
 
 from tensorflow_probability.substrates import jax as tfp
 
-from util import log_bessel_iv_asymptotic, log_sinh, coth
+from gimbal.util import log_bessel_iv_asymptotic, log_sinh, coth
 
 CONCENTRATION_REGULARIZER = 1e-8
 VARIANCE_REGULARIZER = 1e-8
@@ -267,7 +267,7 @@ class vonMisesFisherGaussian:
             seed : jax.random.PRNGKey
         
         Returns:
-            pos_samploes: ndarray, shape (*sample_shape, *batch_shape, *event_shape)
+            pos_samples: ndarray, shape (*sample_shape, *batch_shape, *event_shape)
         """
         
         seed_1, seed_2 = jr.split(seed)
