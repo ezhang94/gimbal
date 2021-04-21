@@ -1,3 +1,3 @@
 # Default imports
-import .distributions
-import .util
+from . import distributions
+from . import util
