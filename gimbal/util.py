@@ -1,5 +1,28 @@
 import jax.numpy as jnp
 
+def project(Xs, P):
+    """Project 3D positions to 2D for a given camera projection matrix.
+
+    Parameters
+    ----------
+        Xs: ndarray, shape (....,3)
+            3D coordinates in ambient world space
+        P: ndarray, shape (3,4)
+            Camera projection matrix
+
+    Returns
+    -------
+        ys: ndarray, shape (...,2)
+            2D coordinates in image plane
+    """
+
+    Xs_h = jnp.concatenate([Xs, jnp.ones((*Xs.shape[:-1],1))], axis=-1)
+    ys_h = Xs_h @ P.T
+    return ys_h[...,:-1] / ys_h[...,[-1]]
+
+# =================================================================== #
+# MATH
+# =================================================================== #
 def log_bessel_iv_asymptotic(x):
     """Logarithm of the asymptotic value of the modified Bessel function of
     the first kind :math:`I_nu`, for any order :math:`nu`.
