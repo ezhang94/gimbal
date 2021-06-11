@@ -5,7 +5,7 @@ import numpy as onp
 
 from tensorflow_probability.substrates import jax as tfp
 
-from gimbal.util import log_bessel_iv_asymptotic, log_sinh, coth
+from util import log_bessel_iv_asymptotic, log_sinh, coth
 
 CONCENTRATION_REGULARIZER = 1e-8
 VARIANCE_REGULARIZER = 1e-8
@@ -36,7 +36,7 @@ def vmf_mean_2d(mean_direction, concentration):
         mean: ndarray, shape (..., 2)
     """
 
-    resultant_length = jax.scipy.special.i1(concentration) / jax.scipy.special.i0(concentration)
+    resultant_length = tfp.math.bessel_iv_ratio(1, concentration)
     resultant_length = jnp.nan_to_num(resultant_length, nan=1.0,
                                       posinf=jnp.inf, neginf=-jnp.inf)
 
