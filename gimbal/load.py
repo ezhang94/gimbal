@@ -13,7 +13,7 @@ def load_skeleton(config_file_path):
     ----------
         config_file_path: str, path to YAML file
 
-    Outputs
+    Returns
     -------
         keypoint_names: str list, len K
         parents: int list, len K
@@ -56,7 +56,7 @@ def load_camera_parameters(cparams_path, cameras=[], mode='array'):
         mode: str, one of {'dict', 'array'}
             Specifies the return type of cparams (see below)
 
-    Outputs
+    Returns
     -------
         cparams: dict of intrinsic and extrinsic camera matrices
             If mode == 'dict', return dictionary of parameters with
