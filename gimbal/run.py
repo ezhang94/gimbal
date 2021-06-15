@@ -2,6 +2,8 @@ import os
 import numpy as onp
 import jax.numpy as jnp
 
+from util import (tree_graph_laplacian,)
+
 # =====================================================================
 
 def _fit_obs_error_parameters(positions, observations, camera_matrices):
@@ -17,13 +19,13 @@ def _fit_obs_error_parameters(positions, observations, camera_matrices):
         w_fitted = jnp.asarray(f['p_isOutlier'])
 
     return dict(obs_outlier_probability=w_fitted,
-                obs_outlier_mean=0.,
+                obs_outlier_location=0.,
                 obs_outlier_variance=k_fitted[...,0],
-                obs_inlier_mean=0.,
+                obs_inlier_location=0.,
                 obs_inlier_variance=k_fitted[...,1],
                 camera_matrices=camera_matrices)
 
-def _fit_skeletal_parameters(positions, parents):
+def _fit_skeletal_parameters(positions, parents, root_variance=1e8):
     """Estimate inter-keypoint distances and variances.
 
     Note that inter-keypoint distance and variance is technically
@@ -43,7 +45,7 @@ def _fit_skeletal_parameters(positions, parents):
     dx_mean = jnp.nanmean(dx, axis=0)
     
     dx_variance = jnp.nanvar(dx, axis=0)
-    dx_variance = dx_variance.at[0].set(1e-8)
+    dx_variance = dx_variance.at[0].set(root_variance)
 
     return dict(pos_radius=dx_mean,
                 pos_radial_variance=dx_variance,
@@ -84,17 +86,18 @@ def _fit_pose_state_parameters(positions, parents, crf_keypoints,
     return dict(state_probability=dir_priors_pis,
                 state_directions=dir_priors_mus,
                 state_concentrations=dir_priors_kappas,
-                state_transition_probability=10*jnp.ones_like(dir_priors_pis),
                 parents=parents,
                 crf_keypoints=crf_keypoints,
                 crf_direction=crf_direction,)
 
 # =====================================================================
 
-def fit(positions, parents=None,
+def fit(positions,
+        parents=None, root_variance=1e8,
         observations=None, camera_matrices=None,
         crf_keypoints=None, crf_direction=[1.,0,0],
-        parameters_to_fit=[], outpath=None):
+        parameters_to_fit=[], outpath=None,
+        ):
     """
     Parameters
     ----------
@@ -118,7 +121,8 @@ def fit(positions, parents=None,
             Specify subset of parameters to load
             If empty (default): load all parameters
         outpath: str
-            Path where parameters should be saved
+            Path where parameters should be saved.
+            default: None, do not save
         
     Returns
     -------
@@ -150,15 +154,19 @@ def fit(positions, parents=None,
         if pkey == 'observation_error':
             if observations is None: warn_missing_input(pkey, 'observations')
             elif camera_matrices is None: warn_missing_input(pkey, 'camera_matrices')
-            else: params.update(
+            else:
+                params.update(
                     _fit_obs_error_parameters(positions,
                                               observations,
                                               camera_matrices)
                 )
         elif pkey == 'skeletal_distance':
             if parents is None: warn_missing_input(pkey, 'parents')
-            else: params.update(
-                    _fit_skeletal_parameters(positions, parents)
+            else:
+                params.update(
+                    _fit_skeletal_parameters(positions,
+                                             parents,
+                                             root_variance)
                 )
         elif pkey == 'temporal_smoothness':
             params.update(
@@ -166,8 +174,9 @@ def fit(positions, parents=None,
             )
         elif pkey == 'pose_state':
             if parents is None: warn_missing_input(pkey, 'parents')
-            elif crf_keypoints is None: warn_missing_input(pkey, 'crf_keypoints')
-            else: params.update(
+            elif crf_keypoints is None:warn_missing_input(pkey, 'crf_keypoints')
+            else:
+                params.update(
                     _fit_pose_state_parameters(positions,
                                                parents,
                                                crf_keypoints,
@@ -178,6 +187,116 @@ def fit(positions, parents=None,
 
     return params
 
+# =====================================================================
+
+def standardize_parameters(params,
+                           pos_location_0=0., pos_variance_0=1e8,
+                           state_transition_count=10.):
+    num_keypoints = len(params['parents'])
+    num_cameras =  len(params['camera_matrices'])
+    dim = params['camera_matrices'].shape[-1] - 1
+    dim_obs = params['camera_matrices'].shape[-2] - 1
+    num_states = len(params['state_probability'])
+
+    # -----------------------------------
+    # Skeletal and positional parameters
+    # -----------------------------------
+    params['pos_radius'] \
+        = jnp.broadcast_to(params['pos_radius'], (num_keypoints,))
+
+    params['pos_radial_variance'] \
+        = jnp.broadcast_to(params['pos_radial_variance'], (num_keypoints,))
+    params['pos_radial_precision'] \
+        = tree_graph_laplacian(
+            params['parents'],
+            1 / params['pos_radial_variance'][...,None,None] * jnp.eye(dim)
+            )
+    params['pos_radial_covariance'] \
+        = jnp.linalg.inv(params['pos_radial_precision'])
+
+    params['pos_dt_variance'] \
+        = jnp.broadcast_to(params['pos_dt_variance'], (num_keypoints,))
+    params['pos_dt_covariance'] \
+        = jnp.kron(jnp.diag(params['pos_dt_variance']), jnp.eye(dim))
+    params['pos_dt_precision'] \
+        = jnp.kron(jnp.diag(1./params['pos_dt_variance']), jnp.eye(dim))
+
+    params['pos_precision_t'] \
+        = params['pos_radial_precision'] + params['pos_dt_precision']
+    params['pos_covariance_t'] \
+        = jnp.linalg.inv(params['pos_precision_t'])
+
+    params['pos_variance_0'] \
+        = jnp.broadcast_to(
+                params.get('pos_variance_0', pos_variance_0),
+                (num_keypoints,))
+    params['pos_covariance_0'] \
+        = jnp.kron(jnp.diag(params['pos_variance_0']), jnp.eye(dim))
+
+    params['pos_location_0'] \
+        = jnp.broadcast_to(
+                params.get('pos_location_0', pos_location_0),
+                (num_keypoints, dim))
+
+    # -----------------------------
+    # Observation error parameters
+    # -----------------------------
+    params['obs_outlier_variance'] \
+        = jnp.broadcast_to(
+                params['obs_outlier_variance'],
+                (num_cameras, num_keypoints))
+    params['obs_outlier_covariance'] \
+        = jnp.kron(
+                params['obs_outlier_variance'][..., None, None],
+                jnp.eye(dim_obs))
+
+    params['obs_inlier_variance'] \
+        = jnp.broadcast_to(
+                params['obs_inlier_variance'],
+                (num_cameras, num_keypoints))
+    params['obs_inlier_covariance'] \
+        = jnp.kron(
+                params['obs_inlier_variance'][..., None, None],
+                jnp.eye(dim_obs))
+
+    params['obs_inlier_location'] \
+        = jnp.broadcast_to(
+                params['obs_inlier_location'],
+                (num_cameras, num_keypoints))
+    params['obs_outlier_location'] \
+        = jnp.broadcast_to(
+                params['obs_outlier_location'],
+                (num_cameras, num_keypoints))
+    
+    params['obs_outlier_probability'] \
+        = jnp.broadcast_to(
+                params['obs_outlier_probability'],
+                (num_cameras, num_keypoints))
+
+    # -----------------------------
+    # Pose state parameters
+    # -----------------------------
+    params['state_transition_count'] \
+        = jnp.broadcast_to(
+                params.get('state_transition_count', state_transition_count),
+                (num_states,))
+    
+    params['state_probability'] \
+        = jnp.broadcast_to(
+                params.get('state_probability', 1./num_states),
+                (num_states,))
+
+    params['state_directions'] \
+        = jnp.broadcast_to(
+                params.get('state_directions', jnp.array([0,0,1.])),
+                (num_states, num_keypoints, dim))
+
+    params['state_concentrations'] \
+        = jnp.broadcast_to(
+                params.get('state_concentrations', 0.),
+                (num_states, num_keypoints))
+    
+    return params
 
 if __name__ == "__main__":
     pass
