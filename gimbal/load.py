@@ -2,16 +2,14 @@ import yaml
 import h5py
 
 import numpy as onp
+import jax.numpy as jnp
 
-def load_skeleton(config_file_path):
+def load_skeleton(skeleton):
     """Load keypoint and parent specification defining skeletal stucture.
-
-    Reads from a YAML file with skeleton defined as ordered
-    {keypoint: parent} dictionary entries.
 
     Parameters
     ----------
-        config_file_path: str, path to YAML file
+        skeleton: dict, ordered {keypoint:parent} dictionary entries
 
     Returns
     -------
@@ -19,10 +17,6 @@ def load_skeleton(config_file_path):
         parents: int list, len K
 
     """
-    with open(config_file_path) as f:
-        out = yaml.load(f, Loader=yaml.SafeLoader)
-        skeleton = out['skeleton']
-
     keypoint_names = list(skeleton.keys())
     parent_names = list(skeleton.values())
 
@@ -44,12 +38,12 @@ def load_skeleton(config_file_path):
         f"Parent of root node should be itself. Received '{parents[0]}'."
     return keypoint_names, parents
 
-def load_camera_parameters(cparams_path, cameras=[], mode='array'):
+def load_camera_parameters(fpath, cameras=[], mode='array'):
     """Load camera parameters.
 
     Parameters
     ----------
-        cparams_path: str, path to HDF5 file with camera parameters
+        fpath: str, path to HDF5 file with camera parameters
         cameras: int list of cameras to load. optional
             If none specified, load all cameras.
             TODO: Allow selection by camera name (i.e. str list)
@@ -67,7 +61,7 @@ def load_camera_parameters(cparams_path, cameras=[], mode='array'):
     # If no cameras specified, load all cameras
     c_idxs = onp.s_[:] if not cameras else cameras
 
-    with h5py.File(cparams_path) as f:
+    with h5py.File(fpath) as f:
         intrinsic = f['camera_parameters']['intrinsic'][c_idxs]
         rotation = f['camera_parameters']['rotation'][c_idxs]
         translation = f['camera_parameters']['translation'][c_idxs]

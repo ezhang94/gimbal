@@ -1,42 +1,183 @@
 import os
 import numpy as onp
+import jax.numpy as jnp
 
 # =====================================================================
-# TEMPORARY
-# If DATAPATH environmental variable not set, default to CWD
-try:
-    DATAPATH = os.environ['DATAPATH']
-except:
-    print("WARNING: DATAPATH variable not found. Defaulting to current working directory.")
-    DATAPATH = os.getcwd()
-print("DATAPATH: ", DATAPATH)
 
-config_file_path = os.path.join(os.path.dirname(__file__), '../scripts/s1-d1/config.yml')
-cparams_path = os.path.join(DATAPATH, "s1-d1-predictions.hdf5")
-mocap_path = os.path.join(DATAPATH, "s1-d1-predictions.hdf5")
-gmm_path = os.path.join(DATAPATH, "gmm_obs_error-dlc2d_mu0_filtered.npz")
-em_path = os.path.join(DATAPATH, "directional_priors_filtered_s180_maxk200.npz")
+def _fit_obs_error_parameters(positions, observations, camera_matrices):
+    # TODO
+
+    print('Fitting observation error parameters...')
+
+    fpath = os.path.join(os.environ['DATAPATH'],
+                         'gmm_obs_error-dlc2d_mu0_filtered.npz')
+    with onp.load(fpath, 'r') as f:
+        m_fitted = jnp.asarray(f['means'])
+        k_fitted = jnp.asarray(f['sigmasqs'])
+        w_fitted = jnp.asarray(f['p_isOutlier'])
+
+    return dict(obs_outlier_probability=w_fitted,
+                obs_outlier_mean=0.,
+                obs_outlier_variance=k_fitted[...,0],
+                obs_inlier_mean=0.,
+                obs_inlier_variance=k_fitted[...,1],
+                camera_matrices=camera_matrices)
+
+def _fit_skeletal_parameters(positions, parents):
+    """Estimate inter-keypoint distances and variances.
+
+    Note that inter-keypoint distance and variance is technically
+    undefined for the root node (k=0), but we retain a placeholder value
+    for subsequent consistency in indexing.
+
+    Returns
+    -------
+        dict, with values
+            pos_radius: ndarray, shape (K, )
+            pos_radial_variance: ndarray, shape (K, )
+            parents: length K
+    """
+
+    print('Fitting skeletal parameters...')
+    dx = jnp.linalg.norm(positions - positions[:, parents, :], axis=-1)
+    dx_mean = jnp.nanmean(dx, axis=0)
+    
+    dx_variance = jnp.nanvar(dx, axis=0)
+    dx_variance = dx_variance.at[0].set(1e-8)
+
+    return dict(pos_radius=dx_mean,
+                pos_radial_variance=dx_variance,
+                parents=parents,)
+
+def _fit_time_smoothing_parameters(positions):
+    """Estimate positional variance of each keypoint from frame to frame.
+
+    Calculate variance as the squared average distance between positions
+    in subsequent frames.
+
+    Returns
+    -------
+        dict, with item
+            pos_dt_variance: ndarray, shape (K, )
+    """
+
+    print('Fitting time smoothing parameters...')
+
+    dx = jnp.linalg.norm(positions[1:] - positions[:-1], axis=-1)
+
+    return dict(pos_dt_variance=jnp.nanmean(dx, axis=0)**2)
+
+def _fit_pose_state_parameters(positions, parents, crf_keypoints,
+                               crf_direction=[1.,0,0]):
+    # TODO
+    print('Fitting pose state parameters...')
+
+    fpath = os.path.join(os.environ['DATAPATH'],
+                         'directional_priors_filtered_s180_maxk200.npz')
+    
+    with onp.load(fpath, 'r') as f:
+        dir_priors_pis = jnp.asarray(f['pis'])
+        dir_priors_mus = jnp.asarray(f['mus'])
+        dir_priors_kappas = jnp.asarray(f['kappas'])
+        num_states = jnp.asarray(f['num_states'])
+
+    return dict(state_probability=dir_priors_pis,
+                state_directions=dir_priors_mus,
+                state_concentrations=dir_priors_kappas,
+                state_transition_probability=10*jnp.ones_like(dir_priors_pis),
+                parents=parents,
+                crf_keypoints=crf_keypoints,
+                crf_direction=crf_direction,)
+
 # =====================================================================
 
-def load_parameters(mocap_path, gmm_path, em_path):
-    global DATAPATH
+def fit(positions, parents=None,
+        observations=None, camera_matrices=None,
+        crf_keypoints=None, crf_direction=[1.,0,0],
+        parameters_to_fit=[], outpath=None):
+    """
+    Parameters
+    ----------
+        positions: ndarray, shape (N, K, 3)
+            Ground truth keypoint positions. May contain NaNs.
+        parents: list of ints, length K, optional.
+            parents[k] is the parent index of the k-th keypoint.
+            Required to fit skeletal parameters
+        observations: ndarray, shape (N, C, K, D_obs), optional.
+            Input keypoint predictions, to be refined, D_obs = {2,3}
+            Required to fit observation error GMM parameters
+        camera_matrices: ndarray, shape (C, D_obs+1, 4), optional.
+            Camera projection matrices.
+        crf_keypoints: tuple, length 2
+            Keypoints specify base and tip of vector to align to 
+            the canonical (i.e. `crf_direction`)
+        crf_direction: array-like, unit length
+            Direction vector identifying the canonical reference frame
+            default: x-direction
+        parameters: list, str
+            Specify subset of parameters to load
+            If empty (default): load all parameters
+        outpath: str
+            Path where parameters should be saved
+        
+    Returns
+    -------
+        params: dict, with keys
+            camera_matrices, parents,
+            obs_outlier_probability,
+            obs_outlier_mean, obs_outlier_variance,
+            obs_inlier_mean, obs_inlier_variance,
+            pos_radius, pos_radial_variance,
+            pos_dt_variance, pos_dt_variance_0, pos_dynamic_mean_0,
+            crf_direction, crf_keypoints,
+            state_probability, state_directions, state_concentrations,
+            state_transition_count,
+    """
 
-    # GMM inlier/outlier parameters
-    # Hires2/JDM31 with filtered mocap data, separated heads
-    with onp.load(gmm_path, 'r') as f:
-        m_fitted = f['means']
-        k_fitted = f['sigmasqs']
-        w_fitted = f['p_isOutlier']
+    # If no parameters to fit specified, fit all
+    if not parameters_to_fit:
+        parameters_to_fit = [
+            'observation_error',
+            'skeletal_distance',
+            'temporal_smoothness',
+            'pose_state',]
 
-    # Pose state parameters
-    with onp.load(em_path, 'r') as f:
-        print(f.files)
-        dir_priors_pis = f['pis']
-        dir_priors_mus = f['mus']
-        dir_priors_kappas = f['kappas']
-        num_states = f['num_states']
+    warn_missing_input= lambda pkey, input: \
+        print(f"WARNING: Missing input '{input}'. Cannot fit {pkey} parameters...Skipping.")
+    
+    params = {}
+    for pkey in parameters_to_fit:
+        if pkey == 'observation_error':
+            if observations is None: warn_missing_input(pkey, 'observations')
+            elif camera_matrices is None: warn_missing_input(pkey, 'camera_matrices')
+            else: params.update(
+                    _fit_obs_error_parameters(positions,
+                                              observations,
+                                              camera_matrices)
+                )
+        elif pkey == 'skeletal_distance':
+            if parents is None: warn_missing_input(pkey, 'parents')
+            else: params.update(
+                    _fit_skeletal_parameters(positions, parents)
+                )
+        elif pkey == 'temporal_smoothness':
+            params.update(
+                _fit_time_smoothing_parameters(positions)
+            )
+        elif pkey == 'pose_state':
+            if parents is None: warn_missing_input(pkey, 'parents')
+            elif crf_keypoints is None: warn_missing_input(pkey, 'crf_keypoints')
+            else: params.update(
+                    _fit_pose_state_parameters(positions,
+                                               parents,
+                                               crf_keypoints,
+                                               crf_direction)
+                )
+        else:
+            print(f"WARNING: Unexpected parameter specification '{pkey}'. Skipping.")
+
+    return params
 
 
-if __name__ == "__main__":    
-    load_parameters()
+if __name__ == "__main__":
     pass
