@@ -20,9 +20,41 @@ def project(Xs, P):
     ys_h = Xs_h @ P.T
     return ys_h[...,:-1] / ys_h[...,[-1]]
 
-# =================================================================== #
-# MATH
-# =================================================================== #
+def tree_graph_laplacian(parents, weights):
+    """Generate weighted Laplcian matrix associated with a tree graph.
+
+    Parameters
+    ----------
+        parents: array-like, length N
+            parents[j] is the parent index of node j
+            The parent of the root node is itself
+        weights: nadarray, shape (N, D, D)
+
+    Returns
+    -------
+        G: ndarray, shape (ND, ND)
+    """
+
+    N, D = len(parents), weights.shape[-1]
+   
+    G = jnp.zeros((N * D, N * D))
+    for i in range(N): # Node i
+        # Add self-iteration term
+        G = G.at[i*D : (i+1)*D, i*D : (i+1)*D].add(weights[i])
+        
+        for j in range(i+1, N): # Children of node i
+            if parents[j] == i:
+                # Add degree term
+                G = G.at[i*D:(i+1)*D, i*D:(i+1)*D].add(weights[j])
+
+                # Subtract adjacency term
+                G = G.at[i*D : (i+1)*D, j*D : (j+1)*D].add(-weights[j])
+                G = G.at[j*D : (j+1)*D, i*D : (i+1)*D].add(-weights[j])
+    return G
+
+# =================================================================== 
+# SAFE MATH
+# =================================================================== 
 def log_bessel_iv_asymptotic(x):
     """Logarithm of the asymptotic value of the modified Bessel function of
     the first kind :math:`I_nu`, for any order :math:`nu`.
