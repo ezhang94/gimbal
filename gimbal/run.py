@@ -70,7 +70,7 @@ def _fit_time_smoothing_parameters(positions):
     return dict(pos_dt_variance=jnp.nanmean(dx, axis=0)**2)
 
 def _fit_pose_state_parameters(positions, parents, crf_keypoints,
-                               crf_direction=[1.,0,0]):
+                               crf_direction=[[1.,0,0], [0,1.,0], [0,0,1.]]):
     # TODO
     print('Fitting pose state parameters...')
 
@@ -114,9 +114,9 @@ def fit(positions,
         crf_keypoints: tuple, length 2
             Keypoints specify base and tip of vector to align to 
             the canonical (i.e. `crf_direction`)
-        crf_direction: array-like, unit length
-            Direction vector identifying the canonical reference frame
-            default: x-direction
+        crf_direction: ndarray, shape (3, 3)
+            Direction vectors identifying the canonical reference frame
+            default: x-direction, y-direct
         parameters: list, str
             Specify subset of parameters to load
             If empty (default): load all parameters
