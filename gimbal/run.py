@@ -88,7 +88,7 @@ def _fit_pose_state_parameters(positions, parents, crf_keypoints,
                 state_concentrations=dir_priors_kappas,
                 parents=parents,
                 crf_keypoints=crf_keypoints,
-                crf_direction=crf_direction,)
+                crf_direction=jnp.asarray(crf_direction),)
 
 # =====================================================================
 
