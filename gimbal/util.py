@@ -102,6 +102,91 @@ def triangulate_multiview(Ps, ys, camera_pairs=[]):
     return Xs
 
 # =================================================================== 
+# Geometry
+# =================================================================== 
+
+def xyz_to_uv(x_3d, u_axis, v_axis):
+    """Project 3D coordinates located in a 2D subspace defined by (u,v).
+
+    Parameters:
+        x_3d: ndarray, shape (...,3)
+            Coordinates in 3D to project.
+        u_axis: array, shape (3,)
+        v_axis: array, shape (3,)
+            Unit-norm vectors defining the 2D U-V plane.
+            Vectors are orthogonal.
+
+    Returns:
+        x_2d: ndarray, shape (...,2)
+    """
+
+    return jnp.stack(
+        [jnp.sum(x_3d * u_axis, axis=-1),  # New U-coordinate
+         jnp.sum(x_3d * v_axis, axis=-1),  # New V-coordinate
+        ], axis=-1)
+
+def uv_to_xyz(x_2d, u_axis, v_axis):
+    """Map 2D coordinates in (u,v) coordinate system into 3D space.
+
+    Parameters:
+        x_2d: ndarray, shape (...,2)
+            Coordinates in 2D to map.
+        u_axis: array, shape (3,)
+        v_axis: array, shape (3,)
+            Unit-norm vectors defining the 2D U-V plane.
+            Vectors are orthogonal.
+
+    Returns:
+        x_3d: ndarray, shape (...,3)
+    """
+
+    return x_2d[...,[0]] * u_axis + x_2d[...,[1]] * v_axis
+
+def cartesian_to_polar(us):
+    """Transform Cartesian direction vectors to polar coordinates.
+
+    Parameters
+    ----------
+        us: ndarray, shape (..., 3)
+            Unit direction vectors
+
+    Returns
+    -------
+        thetas: ndarray, shape (...,)
+            Polar angles
+        phis: ndarray, shape (...,)
+            Azimuthal angles
+    """
+    # Polar angle = atan(y/x)
+    thetas = jnp.arctan2(us[...,1], us[...,0])
+
+    # Azimuthal angle = acos(z) = atan(sqrt(x**2 + y **2) / z)
+    phis = jnp.arctan2(jnp.sqrt(us[...,0]**2 + us[...,1]**2), us[...,2])
+    
+    return thetas, phis
+
+def R_mat(thetas):
+    """Generate 3D rotation matrix given polar angles (x-y plane only).
+    
+    Parameters
+    ----------
+        thetas: (...,)
+    
+    Returns
+    -------
+        Rs: ndarray, shape (..., 3, 3)
+    """
+    batch_shape = jnp.atleast_1d(thetas).shape
+
+    Rs = jnp.tile(jnp.eye(3), (*batch_shape, 1, 1))
+    Rs = Rs.at[...,0,0].set(jnp.cos(thetas))
+    Rs = Rs.at[...,1,1].set(jnp.cos(thetas))
+    Rs = Rs.at[...,0,1].set(-jnp.sin(thetas))
+    Rs = Rs.at[...,1,0].set(jnp.sin(thetas))
+    
+    return jnp.squeeze(Rs)
+
+# =================================================================== 
 # Gaussians with constrained precision matrices
 # =================================================================== 
 
