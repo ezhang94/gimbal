@@ -1,15 +1,20 @@
+import numpy as onp
 import jax.numpy as jnp
 
-def project(Xs, P):
+# =================================================================== 
+# Computer vision
+# =================================================================== 
+
+def project(P, Xs):
     """Project 3D positions to 2D for a given camera projection matrix.
 
     Parameters
     ----------
-        Xs: ndarray, shape (....,3)
-            3D coordinates in ambient world space
         P: ndarray, shape (3,4)
             Camera projection matrix
-
+        Xs: ndarray, shape (....,3)
+            3D coordinates in ambient world space
+        
     Returns
     -------
         ys: ndarray, shape (...,2)
@@ -19,6 +24,86 @@ def project(Xs, P):
     Xs_h = jnp.concatenate([Xs, jnp.ones((*Xs.shape[:-1],1))], axis=-1)
     ys_h = Xs_h @ P.T
     return ys_h[...,:-1] / ys_h[...,[-1]]
+
+def triangulate(P1, P2, y1, y2,):
+    """Triangulate 3D positions from given 2D observations.
+
+    Wrapper function for OpenCV's triangulation function.
+
+    Parameters
+    ----------
+        P1: ndarray, (3, 4)
+        P2: ndarray, (3, 4)
+            Camera projection matrices of images 1 and 2, respectively
+        y1: ndarray, (..., 2)
+        y2: ndarray, (..., 2)
+            2D image coordinates from images 1 and 2, respectively
+        
+    Returns
+    -------
+        Xs: ndarray, shape (...,3)
+            3D coordinates in ambient space
+    """
+    raise NotImplementedError
+
+    # Unable to get OpenCV to run on cluster.
+    # TODO Implement DLT algorithm in JAX
+    # See OpenCV source code for reference
+    #   https://github.com/opencv/opencv_contrib/blob/master/modules/sfm/src/triangulation.cpp
+
+    from cv2 import triangulatePoints
+
+    # Xs_h: ndarray, shape (-1, 4). Homogeneous triangulated points
+    Xs_h = triangulatePoints(onp.asarray(P1),
+                             onp.asarray(P2),
+                             onp.asarray(y1).reshape(-1,2).T,
+                             onp.asarray(y2).reshape(-1,2).T).T
+    
+    # Xs: ndarray, shape (-1, 3). Cartesian normalized triangulated points.
+    Xs = Xs_h[...,:-1] / Xs_h[...,[-1]]
+
+    batch_shape = y1.shape[:-1]
+    return Xs.reshape(*batch_shape, 3)
+
+def triangulate_multiview(Ps, ys, camera_pairs=[]):
+    """Robust triangulation of 3D positions from multiple 2D observations.
+
+    Computes direct linear triangulation for each pair of camera views
+    using OpenCv's triangulatePoints, then returns the median position
+    across all triangulations.
+
+    Parameters
+    ----------
+        Ps: ndarray, (C, 3, 4)
+            Camera projection matrices
+        ys: ndarray, (C, ..., 2)
+            2D image coordinates
+        camera_pairs: list of tuples, optional.
+            Pairs of cameras to triangulate. If None (default), all
+            possible pairs of cameras are triangulated.
+
+    Returns
+    -------
+        Xs: ndarray, shape (...,3)
+            3D coordinates in ambient space
+    """
+    
+    C = len(Ps)
+    batch_shape = ys.shape[1:-1]
+    
+    if not camera_pairs:
+        camera_pairs = [(i,j) for i in range(C) for j in range(i+1, C)]
+
+    # Triangulate
+    Xs = jnp.empty((len(camera_pairs), *batch_shape, 3))
+    for i, (c0, c1) in enumerate(camera_pairs):
+        Xs = Xs.at[i].set(triangulate(Ps[c0], Ps[c1], ys[c0], ys[c1]))
+    
+    return Xs
+
+# =================================================================== 
+# Gaussians with constrained precision matrices
+# =================================================================== 
 
 def tree_graph_laplacian(parents, weights):
     """Generate weighted Laplcian matrix associated with a tree graph.
@@ -53,7 +138,7 @@ def tree_graph_laplacian(parents, weights):
     return G
 
 # =================================================================== 
-# SAFE MATH
+# Safe math
 # =================================================================== 
 def log_bessel_iv_asymptotic(x):
     """Logarithm of the asymptotic value of the modified Bessel function of
