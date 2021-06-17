@@ -5,67 +5,100 @@ import jax.numpy as jnp
 # Computer vision
 # =================================================================== 
 
-def project(P, Xs):
-    """Project 3D positions to 2D for a given camera projection matrix.
+def project(Ps, Xs, axis=0):
+    """Project 3D positions to 2D for given camera projection matrices.
 
     Parameters
     ----------
-        P: ndarray, shape (3,4)
+        Ps: ndarray, shape ([C],3,4)
             Camera projection matrix
         Xs: ndarray, shape (....,3)
             3D coordinates in ambient world space
+        axis: int, optional.
+            Axis along which to stack multiple views. Default: 0
         
     Returns
     -------
-        ys: ndarray, shape (...,2)
-            2D coordinates in image plane
+        ys: ndarray, shape (...,[C],...,2)
+            2D coordinates in image plane, where C views are stacked 
+            along the specified axis. If Ps.shape = (3,4), or (1,3,4),
+            then ys.shape = (...,2).
     """
 
-    Xs_h = jnp.concatenate([Xs, jnp.ones((*Xs.shape[:-1],1))], axis=-1)
-    ys_h = Xs_h @ P.T
-    return ys_h[...,:-1] / ys_h[...,[-1]]
+    def _project(P):
+        Xs_h = jnp.concatenate([Xs, jnp.ones((*Xs.shape[:-1],1))], axis=-1)
+        ys_h = Xs_h @ P.T
+        return ys_h[...,:-1] / ys_h[...,[-1]]
 
-def triangulate(P1, P2, y1, y2,):
-    """Triangulate 3D positions from given 2D observations.
+    # Ensure Ps is at least 3D. Otherwise, add 3rd axis to position 0
+    # If Ps.shape = (3,4), the below function ensures Ps.shape -> (1,3,4)
+    # On the otherhand, jnp.atleast_3d(Ps).shape -> (3,4,1).
+    Ps = Ps.reshape(-1,3,4) 
 
-    Wrapper function for OpenCV's triangulation function.
+    ys = jnp.stack([_project(P) for P in Ps], axis=axis)
+    return ys.squeeze()
+
+def triangulate_dlt(Ps, ys):
+    """Triangulate 3D position between two 2D correspondances using the direct
+    linear transformation (DLT) method.
+
+    If any 2D correspondance is missing (i.e. NaN), returns triangulated
+    position as NaN value as well.
+
+    TODO: Normalize input data (see HZ, p104. "4.4 Transformation 
+    invariance and normalization.", particulary 4.4.4): For each image,
+        1.  Translate all points such that collection's centroid is
+            about the origin.
+        2.  Scale all points (Cartesian/non-homogeneous) so average
+            distance is sqrt(2).
+
+    Reference: Hartley and Zimmerman, p312; [OpenCV implementation]
+    (https://github.com/opencv/opencv_contrib/blob/master/modules/sfm/src/triangulation.cpp)
 
     Parameters
     ----------
-        P1: ndarray, (3, 4)
-        P2: ndarray, (3, 4)
-            Camera projection matrices of images 1 and 2, respectively
-        y1: ndarray, (..., 2)
-        y2: ndarray, (..., 2)
-            2D image coordinates from images 1 and 2, respectively
-        
+        Ps: ndarray, shape (C,3,4)
+            Camera matrices
+        ys: ndarray, shape (C,...,2)
+            2D image correspondances
+
     Returns
     -------
-        Xs: ndarray, shape (...,3)
-            3D coordinates in ambient space
+        x: ndarray, shape (...,3)
+
     """
-    raise NotImplementedError
+    Ps, ys = jnp.atleast_3d(Ps), jnp.atleast_3d(ys)
+    num_cameras = len(Ps)
+    batch_shape = ys.shape[1:-1]
 
-    # Unable to get OpenCV to run on cluster.
-    # TODO Implement DLT algorithm in JAX
-    # See OpenCV source code for reference
-    #   https://github.com/opencv/opencv_contrib/blob/master/modules/sfm/src/triangulation.cpp
+    A = jnp.empty((*batch_shape, 2*num_cameras,4))
 
-    from cv2 import triangulatePoints
+    # Eliminate homogeneous scale factor via cross product
+    for c in range(num_cameras):
+        P, y = Ps[c], ys[c]
+        A = A.at[..., 2*c,  :].set(y[..., [0]] * P[2] - P[0])
+        A = A.at[..., 2*c+1,:].set(y[..., [1]] * P[2] - P[1])
 
-    # Xs_h: ndarray, shape (-1, 4). Homogeneous triangulated points
-    Xs_h = triangulatePoints(onp.asarray(P1),
-                             onp.asarray(P2),
-                             onp.asarray(y1).reshape(-1,2).T,
-                             onp.asarray(y2).reshape(-1,2).T).T
-    
-    # Xs: ndarray, shape (-1, 3). Cartesian normalized triangulated points.
-    Xs = Xs_h[...,:-1] / Xs_h[...,[-1]]
+    # Solution which minimizes algebraic corespondance error is
+    # the right eigenvector associated with smallest eigenvalue.
+    # Vh: ndarray, shape (N,4,4). Matrix of right eigenvectors
+    _, _, Vh = jnp.linalg.svd(A)
 
-    batch_shape = y1.shape[:-1]
-    return Xs.reshape(*batch_shape, 3)
+    X = Vh[...,-1,:] # 3D position in homogeneous coordinates, shape (N,4)
+    X = X[...,:-1] / X[...,[-1]]
 
-def triangulate_multiview(Ps, ys, camera_pairs=[]):
+    # Inputs with NaN entries produce NaN matrix blocks in A.
+    # When SVD performed on these matrix blocks, returns matrix of -I
+    # Resulting X vector = [0,0,0.], which is unidentifiable from a point
+    # truly at the origin. Mask these points out and reset as NaN.
+    # NBL: Appears unneeded with jax.numpy, but needed for regular numpy
+    # isnan_mask = jnp.any(jnp.isnan(A), axis=(-1,-2)) # shape (...,)
+    # X = X.at[isnan_mask].set(jnp.nan)
+
+    return jnp.squeeze(X)
+
+
+def triangulate(Ps, ys, camera_pairs=[]):
     """Robust triangulation of 3D positions from multiple 2D observations.
 
     Computes direct linear triangulation for each pair of camera views
@@ -97,12 +130,12 @@ def triangulate_multiview(Ps, ys, camera_pairs=[]):
     # Triangulate
     Xs = jnp.empty((len(camera_pairs), *batch_shape, 3))
     for i, (c0, c1) in enumerate(camera_pairs):
-        Xs = Xs.at[i].set(triangulate(Ps[c0], Ps[c1], ys[c0], ys[c1]))
+        Xs = Xs.at[i].set(triangulate_dlt(Ps[(c0,c1),:,:], ys[(c0,c1),...]))
     
     return Xs
-
+    
 # =================================================================== 
-# Geometry
+# Coordinate frames
 # =================================================================== 
 
 def xyz_to_uv(x_3d, u_axis, v_axis):
@@ -165,6 +198,10 @@ def cartesian_to_polar(us):
     
     return thetas, phis
 
+# =================================================================== 
+# Angles and rotations
+# =================================================================== 
+
 def R_mat(thetas):
     """Generate 3D rotation matrix given polar angles (x-y plane only).
     
@@ -185,6 +222,30 @@ def R_mat(thetas):
     Rs = Rs.at[...,1,0].set(jnp.sin(thetas))
     
     return jnp.squeeze(Rs)
+
+def signed_angular_difference(a, b, n):
+    """Compute signed angular differencee required to rotate a TO b,
+    about the plane normal vector n.
+
+    Input arrays expected to be unit length.
+
+    Parameters
+    ----------
+        a: ndarray, shape (...,D)
+            Source vector
+        b: ndarray, shape (...,D)
+            Destination vector
+        n: ndarray, shape (D,) or (...,D)
+            Normal vector about which to rotate
+
+    Returns
+    -------
+        theta: ndarray, shape (...,)
+    """
+    print(f"a.shape: {a.shape}, b.shape: {b.shape}")
+    cos_theta = jnp.dot(jnp.cross(a, b), n)
+    sin_theta = jnp.einsum('...jk, ...jk -> ...j', a, b)
+    return jnp.arctan2(cos_theta, sin_theta)
 
 # =================================================================== 
 # Gaussians with constrained precision matrices
