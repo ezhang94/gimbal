@@ -35,8 +35,7 @@ def initialize(seed, params, observations, init_positions=None):
     if init_positions is None:
         if D_obs == 2:
             obs = jnp.moveaxis(observations, 1, 0)
-            pos = triangulate(params['camera_matrices'], obs)
-            positions = jnp.moveaxis(pos, 0, 1)
+            positions = triangulate(params['camera_matrices'], obs)
         elif D_obs == 3:
             positions = observations.copy()
         else:

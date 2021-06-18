@@ -151,7 +151,7 @@ def triangulate(Ps, ys, camera_pairs=[]):
     for i, (c0, c1) in enumerate(camera_pairs):
         Xs = Xs.at[i].set(triangulate_dlt(Ps[(c0,c1),:,:], ys[(c0,c1),...]))
     
-    return Xs
+    return jnp.median(Xs, axis=0)
     
 # =================================================================== 
 # Coordinate frames
