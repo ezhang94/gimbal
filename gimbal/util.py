@@ -242,7 +242,6 @@ def signed_angular_difference(a, b, n):
     -------
         theta: ndarray, shape (...,)
     """
-    print(f"a.shape: {a.shape}, b.shape: {b.shape}")
     cos_theta = jnp.dot(jnp.cross(a, b), n)
     sin_theta = jnp.einsum('...jk, ...jk -> ...j', a, b)
     return jnp.arctan2(cos_theta, sin_theta)

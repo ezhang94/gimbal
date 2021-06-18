@@ -1,7 +1,9 @@
 import os
 import numpy as onp
 import jax.numpy as jnp
+import jax.random as jr
 
+import mcmc
 from util import (tree_graph_laplacian,)
 
 # =====================================================================
@@ -70,7 +72,9 @@ def _fit_time_smoothing_parameters(positions):
     return dict(pos_dt_variance=jnp.nanmean(dx, axis=0)**2)
 
 def _fit_pose_state_parameters(positions, parents, crf_keypoints,
-                               crf_direction=[[1.,0,0], [0,1.,0], [0,0,1.]]):
+                               crf_abscissa=jnp.array([1.,0, 0]),
+                               crf_normal=jnp.array([0, 0, 1.]),
+                               ):
     # TODO
     print('Fitting pose state parameters...')
 
@@ -88,14 +92,16 @@ def _fit_pose_state_parameters(positions, parents, crf_keypoints,
                 state_concentrations=dir_priors_kappas,
                 parents=parents,
                 crf_keypoints=crf_keypoints,
-                crf_direction=jnp.asarray(crf_direction),)
+                crf_abscissa=crf_abscissa,
+                crf_normal=crf_normal)
 
 # =====================================================================
 
 def fit(positions,
         parents=None, root_variance=1e8,
         observations=None, camera_matrices=None,
-        crf_keypoints=None, crf_direction=[1.,0,0],
+        crf_keypoints=None,
+        crf_abscissa=jnp.array([1.,0, 0]), crf_normal=jnp.array([0, 0, 1.]),
         parameters_to_fit=[], outpath=None,
         ):
     """
@@ -113,13 +119,16 @@ def fit(positions,
             Camera projection matrices.
         crf_keypoints: tuple, length 2
             Keypoints specify base and tip of vector to align to 
-            the canonical (i.e. `crf_direction`)
-        crf_direction: ndarray, shape (3, 3)
-            Direction vectors identifying the canonical reference frame
-            default: x-direction, y-direct
+            the canonical direction (i.e. `crf_abscissa`)
+        crf_abscissa: ndarray, shape (3,)
+            (Unit) vector identifying the first axis/abscissa of the
+            canonical reference frame. default: x-axis
+        crf_normal: ndarray, shape (3,)
+            Unit vector identifying the normal/applicate direction of the
+            canonical reference frame. default: z-axis
         parameters: list, str
-            Specify subset of parameters to load
-            If empty (default): load all parameters
+            Specify subset of parameters to load. If empty (default):
+            fit all parameters
         outpath: str
             Path where parameters should be saved.
             default: None, do not save
@@ -133,7 +142,7 @@ def fit(positions,
             obs_inlier_mean, obs_inlier_variance,
             pos_radius, pos_radial_variance,
             pos_dt_variance, pos_dt_variance_0, pos_dynamic_mean_0,
-            crf_direction, crf_keypoints,
+            crf_keypoints, crf_abscissa, crf_normal,
             state_probability, state_directions, state_concentrations,
             state_transition_count,
     """
@@ -180,7 +189,8 @@ def fit(positions,
                     _fit_pose_state_parameters(positions,
                                                parents,
                                                crf_keypoints,
-                                               crf_direction)
+                                               crf_abscissa,
+                                               crf_normal)
                 )
         else:
             print(f"WARNING: Unexpected parameter specification '{pkey}'. Skipping.")
@@ -197,6 +207,13 @@ def standardize_parameters(params,
     dim = params['camera_matrices'].shape[-1] - 1
     dim_obs = params['camera_matrices'].shape[-2] - 1
     num_states = len(params['state_probability'])
+
+    # -----------------------------------
+    # Canonical reference frame
+    # -----------------------------------
+    x_axis, z_axis = params['crf_abscissa'], params['crf_normal']
+    y_axis = jnp.cross(z_axis, x_axis)
+    params['crf_axes'] = jnp.stack([x_axis, y_axis, z_axis], axis=0)
 
     # -----------------------------------
     # Skeletal and positional parameters
@@ -297,6 +314,48 @@ def standardize_parameters(params,
                 (num_states, num_keypoints))
     
     return params
+
+# =====================================================================
+
+def predict(seed, params, observations, init_positions=None,
+            num_mcmc_iterations=1000,
+            hmc_options={'init_step_size':1e-1, 'num_leapfrog_steps':1},
+            out_options={}
+            ):
+    """Predict latent variables from observations using MCMC sampling.
+
+    Parameters
+    ----------
+        seed: jax.random.PRNGKey
+        params: dict
+        observations: ndarray, shape (N, C, K, D_obs)
+        init_positions: None or ndarray, shape (N, K, D), optional
+            Initial guess of 3D positions. If None (default), initial
+            guess made from observations in mcmc.initialize
+        num_mcmc_iterations: int
+        hmc_options: dict, optional
+        out_options: dict, optional
+            If empty (default), samples are not saved. Else, samples are
+            saved to HDF5 according to the specified items:
+                path: str
+                chunksize:
+                thinning: int, optional.
+                burnin: int, optional
+                variables: list, optional
+            default: {}, do not save.
+
+    Returns
+    -------
+    """
+
+    params = standardize_parameters(params)
+
+    seed = iter(jr.split(seed))
+    samples = mcmc.initialize(next(seed), params,
+                              observations, init_positions)
+
+    return samples
+
 
 if __name__ == "__main__":
     pass
