@@ -74,7 +74,9 @@ class TestMultiview(unittest.TestCase):
 
         positions = self.positions[:10, 0, :]                           # shape (N=10, 3)
         cmatrices = self.camera_matrices[:2]                            # shape (C=2, 3, 4)
-        observations = util.project(cmatrices, positions)               # shape (C, N, 2)
+        observations = jnp.stack(                                       # shape (C, N, 2)
+            [util.project(P, positions) for P in cmatrices],
+            axis=0)
         
         test_val = util.triangulate_dlt(cmatrices, observations)
 
@@ -87,7 +89,10 @@ class TestMultiview(unittest.TestCase):
 
         positions = self.positions[:2, 0:5, :]                          # shape (N=2, K=5, 3)
         cmatrices = self.camera_matrices[:2]                            # shape (C=2, 3, 4)
-        observations = util.project(cmatrices, positions)               # shape (C, N, K, 2)
+        observations = jnp.stack(                                       # shape (C, N, K, 2)
+            [util.project(P, positions) for P in cmatrices],
+            axis=0)
+        
 
         test_val = util.triangulate_dlt(cmatrices, observations)
 
@@ -99,7 +104,9 @@ class TestMultiview(unittest.TestCase):
 
         positions = self.positions[:2, 2:7, :]                          # shape (N=2, K=5, 3)
         cmatrices = self.camera_matrices[:2]                            # shape (C=2, 3, 4)
-        observations = util.project(cmatrices, positions)               # shape (C, N, K, 2)
+        observations = jnp.stack(                                       # shape (C, N, K, 2)
+            [util.project(P, positions) for P in cmatrices],
+            axis=0)
 
         test_val = util.triangulate_dlt(cmatrices, observations)
 
@@ -116,9 +123,11 @@ class TestMultiview(unittest.TestCase):
         # Triangulate from C > 2 using DLT. If there are no outliers, then
         # results should be similar to when C=2, but perhaps more error.
 
-        positions = self.positions[:, 0:2, :]                         # shape (N=10, K=2, 3)
+        positions = self.positions[:, 0:2, :]                           # shape (N=10, K=2, 3)
         cmatrices = self.camera_matrices[:3]                            # shape (C=2, 3, 4)
-        observations = util.project(cmatrices, positions)               # shape (C, N, K, 2)
+        observations = jnp.stack(                                       # shape (C, N, K, 2)
+            [util.project(P, positions) for P in cmatrices],
+            axis=0)
 
         test_3 = util.triangulate_dlt(cmatrices, observations)
         test_2 = util.triangulate_dlt(cmatrices[:2], observations[:2])
@@ -138,7 +147,9 @@ class TestMultiview(unittest.TestCase):
 
         positions = self.positions[:, 0:2, :]                           # shape (N=10, K=2, 3)
         cmatrices = self.camera_matrices[:3]                            # shape (C=2, 3, 4)
-        observations = util.project(cmatrices, positions)               # shape (C, N, K, 2)
+        observations = jnp.stack(                                       # shape (C, N, K, 2)
+            [util.project(P, positions) for P in cmatrices],
+            axis=0)
 
         test_dlt = util.triangulate_dlt(cmatrices, observations)
         test_med = util.triangulate(cmatrices, observations)
