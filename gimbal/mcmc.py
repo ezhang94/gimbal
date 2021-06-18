@@ -33,8 +33,14 @@ def initialize(seed, params, observations, init_positions=None):
     # Initialize positions
     # ---------------------
     if init_positions is None:
-        positions = triangulate_multiview(params['camera_matrices'],
-                                          observations)
+        if D_obs == 2:
+            obs = jnp.moveaxis(observations, 1, 0)
+            pos = triangulate(params['camera_matrices'], obs)
+            positions = jnp.moveaxis(pos, 0, 1)
+        elif D_obs == 3:
+            positions = observations.copy()
+        else:
+            raise ValueError(f"Expected observation data dimension {{2,3}}, but receieved {D_obs}.")
     else:
         positions = jnp.asarray(init_positions)
 
