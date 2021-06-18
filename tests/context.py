@@ -6,7 +6,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../g
 import distributions
 import util
 
-
 # test_data contains the following corresponding data:
 #     keypoint_names: array of str, length K
 #     parents: array of int, length K
@@ -19,4 +18,6 @@ import util
 #     groundtruth_pos_3d: ndarray, shape(N,K,3)
 #         Ground truth 3D positions, measured with motion capture system
 # where N=100, C=6, K=18.
-DATAFILE = os.path.join(os.path.dirname(__file__), 'test_data.npz')
+TESTS_DIR = os.path.dirname(__file__)
+DATA = os.path.join(TESTS_DIR, 'mock_data.npz')
+PARAMS = os.path.join(TESTS_DIR, 'mock_params.npz')

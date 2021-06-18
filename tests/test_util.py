@@ -1,5 +1,5 @@
 import unittest
-from context import (util, DATAFILE)
+from context import (util, DATA)
 
 import scipy.special
 import numpy as onp
@@ -50,7 +50,7 @@ class TestMath(unittest.TestCase):
 
 class TestMultiview(unittest.TestCase):
     def setUp(self):
-        with onp.load(DATAFILE) as f:
+        with onp.load(DATA) as f:
             self.camera_matrices = jnp.asarray(
                     f['camera_matrices'])                               # shape (C, 3, 4)
             self.positions = jnp.asarray(
