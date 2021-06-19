@@ -4,9 +4,14 @@ gimbal/mcmc.py
 
 import jax.numpy as jnp
 import jax.random as jr
+from jax import jit, partial
+from jax.scipy.special import logsumexp
 
-from util import (triangulate, xyz_to_uv, uv_to_xyz,
-                  signed_angular_difference)
+import tensorflow_probability.substrates.jax as tfp
+import tensorflow_probability.substrates.jax.distributions as tfd
+
+from util import (triangulate, project,
+                  xyz_to_uv, uv_to_xyz, signed_angular_difference)
 
 def initialize(seed, params, observations, init_positions=None):
     """Initialize latent variables of model.
@@ -103,3 +108,69 @@ def initialize(seed, params, observations, init_positions=None):
         transition_matrix=transition_matrix,
     )
 
+def sample_positions(seed, params, observations, samples,
+                     step_size=1e-1, num_leapfrog_steps=1):
+    """Sample positions by taking one Hamiltonian Monte Carlo step.
+
+    """
+    
+    N, C, K, D_obs = observations.shape
+
+    raise NotImplementedError
+    # TODO
+    objective = partial(log_joint_probability,
+                        samples['outliers'],
+                        )
+
+    hmc = tfp.mcmc.HamiltonianMonteCarlo(
+                target_log_prob_fn=objective,
+                num_leapfrog_steps=num_leapfrog_steps,
+                step_size=step_size
+            )
+
+    positions, kernel_results = hmc.one_step(
+                last_positions, 
+                hmc.bootstrap_results(last_positions),
+                seed=seed)
+
+    return positions, kernel_results
+
+@jit
+def sample_outliers(seed, params, observations, samples):
+    """Sample outliers
+    
+    TODO define inlier/outlier distributions beforehand. These are static.
+    """
+
+    predicted_observations = jnp.stack(
+        [project(P, samples['positions']) for P in params['camera_matrices']],
+        axis=1)
+    error = observations - predicted_observations
+
+    # Log probability of predicted observation being inlier
+    Y_inlier = tfd.MultivariateNormalFullCovariance(
+                                    params['obs_inlier_location'], 
+                                    params['obs_inlier_covariance']
+                                    )
+    lp_k0 = jnp.log(1-params['obs_outlier_probability'])
+    lp_k0 += Y_inlier.log_prob(error)
+
+    # Log probability of predicted observation being outlier
+    Y_outlier = tfd.MultivariateNormalFullCovariance(
+                                    params['obs_outlier_location'], 
+                                    params['obs_outlier_covariance']
+                                    )
+    lp_k1 = jnp.log(params['obs_outlier_probability'])
+    lp_k1 += Y_outlier.log_prob(error)
+    
+    # Update posterior
+    lognorm = logsumexp(jnp.stack([lp_k0, lp_k1], axis=-1), axis=-1)
+    p_isoutlier = jnp.exp(lp_k1 - lognorm)
+    
+    # Draw new samples
+    outliers = jr.uniform(seed, observations.shape[:-1]) < p_isoutlier
+
+    # Any NaN observations are obviously drawn from outlier distribution
+    outliers = jnp.where(jnp.isnan(observations[...,0]), True, outliers)
+
+    return outliers

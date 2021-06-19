@@ -1,6 +1,8 @@
 import unittest
+
 from context import (DATA, PARAMS)
 import util_io
+import util
 
 import mcmc
 
@@ -11,11 +13,11 @@ class TestMCMC(unittest.TestCase):
     def setUp(self):
         N = 100
         
-        f = jnp.load(DATA)
-        self.observations = jnp.asarray(f['observed_pos_2d'][:N])       # shape (N, C, 3, 4)
-        self.init_positions = jnp.asarray(f['triangulated_pos_3d'][:N]) # shape (N, C, 3)
-        self.positions = jnp.asarray(f['groundtruth_pos_3d'][:N])       # shape (N, K, 3)
-        f.close()
+        with jnp.load(DATA) as f:
+            self.observations = jnp.asarray(f['observed_pos_2d'][:N])   # shape (N, C, 3, 4)
+            self.init_positions = \
+                            jnp.asarray(f['triangulated_pos_3d'][:N])   # shape (N, C, 3)
+            self.positions = jnp.asarray(f['groundtruth_pos_3d'][:N])   # shape (N, K, 3)
 
         self.params = util_io.load_parameters(PARAMS)
 
@@ -41,6 +43,31 @@ class TestMCMC(unittest.TestCase):
 
         S = len(self.params['state_probability'])
         self.assertTrue(samples['transition_matrix'].shape==(S,S))
+        
+    def test_outliers(self):
+        mocap2d = jnp.stack(
+            [util.project(P, self.positions)
+            for P in self.params['camera_matrices']], axis=1)
+
+        seed = jr.PRNGKey(123)
+        outliers = mcmc.sample_outliers(seed, self.params, mocap2d,
+                                        {'positions': self.positions})
+
+        
+        # Project MOCAP observations should not be outliers
+        # except for MOCAP positions that were originally NaN
+        isnan_mask = jnp.isnan(mocap2d[...,0])
+
+        avg_prob_outlier = jnp.mean(outliers[~isnan_mask])
+
+        self.assertTrue(avg_prob_outlier,
+                        msg=f"Expected outliers[~isnan_mask] to be a finite value, got {avg_prob_outlier}).")
+
+        self.assertTrue(avg_prob_outlier < 0.25,
+                        msg=f"Expected projected ground truth data to be inliers on average, got probability is outlier = {avg_prob_outlier}.")
+      
+        self.assertTrue(jnp.all(outliers[isnan_mask]),
+                        msg='Expected NaN observations to be marked as outliers.')
         
 
 #   python -m unittest -v test_mcmc.py 
