@@ -258,6 +258,15 @@ def standardize_parameters(params,
     # -----------------------------
     # Observation error parameters
     # -----------------------------
+    params['obs_outlier_probability'] \
+        = jnp.broadcast_to(
+                params['obs_outlier_probability'],
+                (num_cameras, num_keypoints))
+
+    params['obs_outlier_location'] \
+        = jnp.broadcast_to(
+                params['obs_outlier_location'],
+                (num_cameras, num_keypoints, dim_obs))
     params['obs_outlier_variance'] \
         = jnp.broadcast_to(
                 params['obs_outlier_variance'],
@@ -267,6 +276,10 @@ def standardize_parameters(params,
                 params['obs_outlier_variance'][..., None, None],
                 jnp.eye(dim_obs))
 
+    params['obs_inlier_location'] \
+        = jnp.broadcast_to(
+                params['obs_inlier_location'],
+                (num_cameras, num_keypoints, dim_obs))
     params['obs_inlier_variance'] \
         = jnp.broadcast_to(
                 params['obs_inlier_variance'],
@@ -275,20 +288,6 @@ def standardize_parameters(params,
         = jnp.kron(
                 params['obs_inlier_variance'][..., None, None],
                 jnp.eye(dim_obs))
-
-    params['obs_inlier_location'] \
-        = jnp.broadcast_to(
-                params['obs_inlier_location'],
-                (num_cameras, num_keypoints))
-    params['obs_outlier_location'] \
-        = jnp.broadcast_to(
-                params['obs_outlier_location'],
-                (num_cameras, num_keypoints))
-    
-    params['obs_outlier_probability'] \
-        = jnp.broadcast_to(
-                params['obs_outlier_probability'],
-                (num_cameras, num_keypoints))
 
     # -----------------------------
     # Pose state parameters
