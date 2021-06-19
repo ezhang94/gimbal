@@ -221,7 +221,7 @@ def cartesian_to_polar(us):
 # Angles and rotations
 # =================================================================== 
 
-def R_mat(thetas):
+def Rxy_mat(thetas):
     """Generate 3D rotation matrix given polar angles (x-y plane only).
     
     Parameters
