@@ -22,9 +22,9 @@ def _fit_obs_error_parameters(positions, observations, camera_matrices):
 
     return dict(obs_outlier_probability=w_fitted,
                 obs_outlier_location=0.,
-                obs_outlier_variance=k_fitted[...,0],
+                obs_outlier_variance=k_fitted[...,1],
                 obs_inlier_location=0.,
-                obs_inlier_variance=k_fitted[...,1],
+                obs_inlier_variance=k_fitted[...,0],
                 camera_matrices=camera_matrices)
 
 def _fit_skeletal_parameters(positions, parents, root_variance=1e8):
