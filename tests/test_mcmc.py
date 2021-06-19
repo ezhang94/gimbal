@@ -6,6 +6,7 @@ import util
 
 import mcmc
 
+from jax import jit
 import jax.numpy as jnp
 import jax.random as jr
 
@@ -21,9 +22,17 @@ class TestMCMC(unittest.TestCase):
 
         self.params = util_io.load_parameters(PARAMS)
 
-    def test_initialize(self):
         seed = jr.PRNGKey(123)
-        samples = mcmc.initialize(seed, self.params, self.observations)
+        self.seed, init_seed = jr.split(seed)
+
+        # Initialize with ground truth 3D positions
+        self.samples = mcmc.initialize(init_seed,
+                                       self.params, self.observations,
+                                       init_positions=self.positions)
+
+    def test_initialize(self):
+        # Don't use initialized samples because we want to test triangulation
+        samples = mcmc.initialize(init_seed, self.params, self.observations)
 
         # Check that positions are close to DLC3D values
         dx = jnp.linalg.norm(samples['positions'] - self.init_positions,
@@ -49,12 +58,10 @@ class TestMCMC(unittest.TestCase):
             [util.project(P, self.positions)
             for P in self.params['camera_matrices']], axis=1)
 
-        seed = jr.PRNGKey(123)
-        outliers = mcmc.sample_outliers(seed, self.params, mocap2d,
-                                        {'positions': self.positions})
-
+        outliers = mcmc.sample_outliers(self.seed, self.params,
+                                        mocap2d, self.samples)
         
-        # Project MOCAP observations should not be outliers
+        # Projected MOCAP observations should not be outliers
         # except for MOCAP positions that were originally NaN
         isnan_mask = jnp.isnan(mocap2d[...,0])
 
@@ -68,7 +75,6 @@ class TestMCMC(unittest.TestCase):
       
         self.assertTrue(jnp.all(outliers[isnan_mask]),
                         msg='Expected NaN observations to be marked as outliers.')
-        
 
 #   python -m unittest -v test_mcmc.py 
 if __name__ == '__main__':
