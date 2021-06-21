@@ -24,18 +24,12 @@ class TestMCMC(unittest.TestCase):
 
         seed = jr.PRNGKey(123)
         self.seed, init_seed = jr.split(seed)
-
-        # Initialize with ground truth 3D positions
         self.samples = mcmc.initialize(init_seed,
-                                       self.params, self.observations,
-                                       init_positions=self.positions)
+                                       self.params, self.observations)
 
     def test_initialize(self):
-        # Don't use initialized samples because we want to test triangulation
-        samples = mcmc.initialize(init_seed, self.params, self.observations)
-
-        # Check that positions are close to DLC3D values
-        dx = jnp.linalg.norm(samples['positions'] - self.init_positions,
+        # Check that triangulated positions are close to DLC3D values
+        dx = jnp.linalg.norm(self.samples['positions'] - self.init_positions,
                              axis=-1)
         mean_dx = jnp.nanmean(dx, axis=0) # shape (K,)
         
@@ -45,13 +39,13 @@ class TestMCMC(unittest.TestCase):
 
         # Check shapes of everything else
         N, C, K, D_obs = self.observations.shape
-        self.assertTrue(samples['outliers'].shape==(N,C,K))
-        self.assertTrue(samples['directions'].shape==(N,K,3))
-        self.assertTrue(samples['heading'].shape==(N,))
-        self.assertTrue(samples['pose_state'].shape==(N,))
+        self.assertTrue(self.samples['outliers'].shape==(N,C,K))
+        self.assertTrue(self.samples['directions'].shape==(N,K,3))
+        self.assertTrue(self.samples['heading'].shape==(N,))
+        self.assertTrue(self.samples['pose_state'].shape==(N,))
 
         S = len(self.params['state_probability'])
-        self.assertTrue(samples['transition_matrix'].shape==(S,S))
+        self.assertTrue(self.samples['transition_matrix'].shape==(S,S))
         
     def test_outliers(self):
         mocap2d = jnp.stack(
