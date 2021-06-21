@@ -1,3 +1,12 @@
+"""
+Test modules of gimbal/mcmc.py
+
+To run all tests:
+  $ python -m unittest -v test_mcmc.py 
+To run a single test:
+  $ python test_mcmc.py TestCaseClass.test_name
+"""
+
 import unittest
 
 from context import (DATA, PARAMS)
@@ -5,6 +14,7 @@ import util_io
 import util
 
 import mcmc
+import run
 
 from jax import jit
 import jax.numpy as jnp
@@ -21,6 +31,7 @@ class TestMCMC(unittest.TestCase):
             self.positions = jnp.asarray(f['groundtruth_pos_3d'][:N])   # shape (N, K, 3)
 
         self.params = util_io.load_parameters(PARAMS)
+        self.params = run.standardize_parameters(self.params)
 
         seed = jr.PRNGKey(123)
         self.seed, init_seed = jr.split(seed)
@@ -47,6 +58,35 @@ class TestMCMC(unittest.TestCase):
         S = len(self.params['state_probability'])
         self.assertTrue(self.samples['transition_matrix'].shape==(S,S))
         
+    def test_lp(self):
+        # Test log joint probability
+
+        lp = mcmc.log_joint_probability(
+                self.params, self.observations,
+                self.samples['outliers'], self.samples['positions'], self.samples['directions'],
+                self.samples['heading'], self.samples['pose_state'], self.samples['transition_matrix'],)
+
+        self.assertTrue(jnp.isfinite(lp),
+                        msg=f'Expected finite valued log probability, but got {lp}.')
+
+    def test_positions(self):
+        positions, kernel_results = \
+            mcmc.sample_positions(self.seed, self.params,
+                                  self.observations, self.samples,
+                                  step_size=1e-1, num_leapfrog_steps=1)
+
+        self.assertTrue(kernel_results.is_accepted,
+                        msg=f'Expected proposed HMC samples to be accepted.')
+
+        avg_gradient = jnp.mean(jnp.abs(
+                            kernel_results.accepted_results
+                                          .grads_target_log_prob[0]))
+
+        self.assertTrue((avg_gradient > 1e-3) and (avg_gradient < 10),
+                        msg=f'Expected average gradients to be on order 1e0, but got {avg_gradient}.')
+
+        self.assertFalse(jnp.allclose(self.samples['positions'], positions))
+
     def test_outliers(self):
         mocap2d = jnp.stack(
             [util.project(P, self.positions)
@@ -123,6 +163,5 @@ class TestMCMC(unittest.TestCase):
         self.assertFalse(jnp.all(old_matrix == self.samples['transition_matrix']),
                          msg='Do not expect randomly initialized transition matrix to match sampled matrix.')
 
-# python -m unittest -v test_mcmc.py 
 if __name__ == '__main__':
     unittest.main()

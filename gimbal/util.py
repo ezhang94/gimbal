@@ -236,6 +236,32 @@ def signed_angular_difference(a, b, n):
 # Gaussians with constrained precision matrices
 # =================================================================== 
 
+def children_of(parents):
+    """Return list of children per node given list of parents
+
+    Parameters
+    ----------
+        parents: 1D array of list, length (K,) of ints.
+            parent[j] is index of parent node of node j.
+
+    Returns
+    -------
+        children: list, length (K,).
+            children[k] contains variable length list of children node
+            indices. May be empty if node has no children.
+    """
+
+    K = len(parents)
+
+    children = []
+    for k in range(K):
+        children.append([])
+        for j in range(k+1, K):
+            if parents[j] == k:
+                children[k].append(j)
+
+    return children
+
 def tree_graph_laplacian(parents, weights):
     """Generate weighted Laplcian matrix associated with a tree graph.
 
@@ -267,6 +293,38 @@ def tree_graph_laplacian(parents, weights):
                 G = G.at[i*D : (i+1)*D, j*D : (j+1)*D].add(-weights[j])
                 G = G.at[j*D : (j+1)*D, i*D : (i+1)*D].add(-weights[j])
     return G
+
+def hvmfg_natural_parameter(children, radii, variance, directions):
+    """Calculate first natural parameter of hierarchical vMFG.
+
+    TODO Incorporate into hvMFG distribution
+
+    Parameters
+    ----------
+        children: list, length K
+        radii: ndarray, shape (K,)
+        variance: ndarray, shape (K,)
+        directions: ndarray, shape (..., K, D)
+
+    Returns
+    -------
+        h: ndarray, shape (..., K, D)
+
+    """
+
+    K = len(children)
+    
+    h = jnp.zeros_like(directions)
+    
+    for k in range(K):
+        # Contributions from self
+        h = h.at[...,k,:].add(directions[...,k,:] * (radii[k]/variance[k]))
+
+        # Contributions from children
+        for j in children[k]:
+            h = h.at[...,k,:].add(-directions[...,j,:] * (radii[j]/variance[j]))
+
+    return h
 
 # =================================================================== 
 # Safe math

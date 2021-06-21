@@ -4,7 +4,7 @@ gimbal/mcmc.py
 
 import jax.numpy as jnp
 import jax.random as jr
-from jax import lax, jit, partial
+from jax import lax, jit, partial, vmap
 from jax.scipy.special import logsumexp
 
 import numpy as onp
@@ -16,7 +16,8 @@ from ssm.messages import hmm_sample
 
 from util import (triangulate, project,
                   xyz_to_uv, uv_to_xyz, signed_angular_difference,
-                  Rxy_mat, cartesian_to_polar)
+                  Rxy_mat, cartesian_to_polar,
+                  hvmfg_natural_parameter,)
 
 def initialize(seed, params, observations, init_positions=None):
     """Initialize latent variables of model.
@@ -113,19 +114,153 @@ def initialize(seed, params, observations, init_positions=None):
         transition_matrix=transition_matrix,
     )
 
+@jit
+def log_joint_probability(params, observations,
+                          outliers, positions, directions,
+                          heading, pose_state, transition_matrix):
+    """Compute the log joint probabiltiy of sampled values under the
+    prior parameters. 
+
+    Parameters
+    ----------
+        params: dict
+        observations: ndarray, shape (N, C, K, D_obs).
+        outliers: ndarray, shape (N, C, K).
+        positions: ndarray, shape (N, K, D).
+        directions: ndarray, shape (N, K, D).
+        heading: ndarray, shape (N,).
+        pose_state: ndarray, shape (N,).
+        transition_matrix: ndarray, shape (S,S).
+    """
+
+    C, S = observations.shape[1], transition_matrix.shape[0]
+
+    Z_prior = tfd.Bernoulli(probs=params['obs_outlier_probability'])
+    
+    # Y_ins = tfd.MultivariateNormalFullCovariance(params['obs_inlier_location'], params['obs_inlier_covariance'])  # batch shape (num_cams, num_joints), event_shape (dim_obs)
+    # Y_outs = tfd.MultivariateNormalFullCovariance(params['obs_outlier_location'], params['obs_outlier_covariance'])
+    Y_ins = [tfd.MultivariateNormalFullCovariance(
+                        params['obs_inlier_location'][c],
+                        params['obs_inlier_covariance'][c]) \
+            for c in range(C)]
+    Y_outs = [tfd.MultivariateNormalFullCovariance(
+                        params['obs_outlier_location'][c],
+                        params['obs_outlier_covariance'][c]) \
+            for c in range(C)]
+    X_t0 = tfd.MultivariateNormalFullCovariance(
+                params['pos_location_0'].ravel(),
+                params['pos_covariance_0'])
+    # U_given_S = VMF(params['pstate']['mus'], params['pstate']['kappas'])  # batch shape (num_states, num_joints), event_shape (dim)
+
+    # =================================================
+
+    def log_likelihood(xt, yts, zts, params):
+        """ Compute log likelihood of observations for a single time step.
+
+        log p(y[t] | x[t], z[t]) = 
+                z[t] log N(y[t] | proj(x[t]; P), omega_in)
+                + (1-z[t]) log N(y[t] | proj(x[t]; P), omega_out)
+        """
+
+        # Does not work :( ... Error message
+        # Shapes must be 1D sequences of concrete values of integer type, got [Traced<ShapedArray(int32[])>with<DynamicJaxprTrace(level=0/2)>].
+        # If using `jit`, try using `static_argnums` or applying `jit` to smaller subfunctions.
+        # obs_err = np.stack([yts[c] - project(xt, params["Ps"][c]) \
+        #                     for c in range(yts.shape[0])], axis=0)
+        # lp = (1-zts) * Y_ins.log_prob(obs_err) + zts * Y_outs.log_prob(obs_err)
+
+        lp = 0
+        # for c in range(yts.shape[0]):
+        for c in range(C):
+            obs_err = yts[c] - project(params["camera_matrices"][c], xt)
+            lp += (1-zts[c]) * Y_ins[c].log_prob(obs_err)
+            lp += zts[c] * Y_outs[c].log_prob(obs_err)
+            # Y_in = tfd.MultivariateNormalFullCovariance(params['obs_inlier_location'][c], params['obs_inlier_covariance'][c])
+            # Y_out = tfd.MultivariateNormalFullCovariance(params['obs_outlier_location'][c], params['obs_outlier_covariance'][c])
+            # lp += (1-zts[c]) * Y_in.log_prob(obs_err)
+            # lp += zts[c] * Y_out.log_prob(obs_err)
+        return jnp.sum(lp)
+    
+    def log_pos_given_dir(xt, ut, params):
+        """ Compute log likelihood of positions given directions for a
+        single time step.
+
+        log p(x[t] | u[t]) = prod_j N(x[t,parj] + r[j] u[t,j], sigma^2 I)
+        """
+        ht = hvmfg_natural_parameter(
+                    params['children'], params['pos_radius'],
+                    params['pos_radial_variance'],
+                    ut)
+        Xt_given_Ut = tfd.MultivariateNormalFullCovariance(
+                            params['pos_radial_covariance'] @ ht.ravel(),
+                            params['pos_radial_covariance'])
+        return Xt_given_Ut.log_prob(xt.ravel())
+    
+    def log_pos_dynamics(xtp1, xt, params):
+        """ Compute log p(x[t+1] | x[t]) = log N(x[t], sigma^2 I) """
+        Xtp1_given_Xt = tfd.MultivariateNormalFullCovariance(
+                                xt.ravel(), params['pos_dt_covariance'])
+        return Xtp1_given_Xt.log_prob(xtp1.ravel())
+    
+    def log_dir_given_state(ut, ht, st, params):
+        """ Compute log p(R(-h[t]) u[t] | h[t], s[t]) = log vMF(nu_s[t], kappa_s[t]) """
+        canon_ut = ut @ Rxy_mat(-ht).T
+        u_given_st = tfd.VonMisesFisher(
+                        params['state_directions'][st],
+                        params['state_concentrations'][st])
+        return jnp.sum(u_given_st.log_prob(canon_ut))
+
+    # =================================================
+    
+    # p(y | x, z)
+    lp = jnp.sum(vmap(log_likelihood, in_axes=(0,0,0,None))
+                     (positions, observations, outliers, params))
+
+    # p(z; rho)
+    lp += jnp.sum(Z_prior.log_prob(outliers))
+
+    # p(x | u)
+    lp += jnp.sum(vmap(log_pos_given_dir, in_axes=(0,0,None))
+                      (positions, directions, params))
+
+    # p(x[t] | x[t-1])
+    lp += jnp.sum(vmap(log_pos_dynamics, in_axes=(0,0,None))
+                      (positions[1:], positions[:-1], params))
+    lp += X_t0.log_prob(positions[0].ravel())
+
+    # p(u | s)
+    # canon_u = jnp.einsum('tmn, tjn-> tjm', R_mat(-h), u)
+    # lp = jnp.sum(U_given_S[s].log_prob(canon_u))
+    lp += jnp.sum(vmap(log_dir_given_state, in_axes=(0,0,0,None))
+                      (directions, heading, pose_state, params))
+
+    # p(h) = VonMises(0, 0), so lp = max entropy over circle, which is constant
+
+    # p(s[0]) + sum p(s[t+1] | s[t])
+    lp += jnp.sum(jnp.log(transition_matrix[pose_state[1:], pose_state[:-1]]))
+    lp += jnp.sum(jnp.log(params['state_probability']))
+
+    return lp
+
 def sample_positions(seed, params, observations, samples,
                      step_size=1e-1, num_leapfrog_steps=1):
-    """Sample positions by taking one Hamiltonian Monte Carlo step.
-
-    """
+    """Sample positions by taking one Hamiltonian Monte Carlo step."""
     
     N, C, K, D_obs = observations.shape
+    
+    def objective(positions):
+        return log_joint_probability(
+            params,
+            observations,
+            samples['outliers'],
+            positions,
+            samples['directions'],
+            samples['heading'],
+            samples['pose_state'],
+            samples['transition_matrix'],
+            )
 
-    raise NotImplementedError
-    # TODO
-    objective = partial(log_joint_probability,
-                        samples['outliers'],
-                        )
+    last_positions = samples['positions']   # shape (N, K, D)
 
     hmc = tfp.mcmc.HamiltonianMonteCarlo(
                 target_log_prob_fn=objective,

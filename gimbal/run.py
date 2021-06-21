@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import jax.random as jr
 
 import mcmc
-from util import (tree_graph_laplacian,)
+from util import (tree_graph_laplacian, children_of)
 
 # =====================================================================
 
@@ -201,12 +201,15 @@ def fit(positions,
 
 def standardize_parameters(params,
                            pos_location_0=0., pos_variance_0=1e8,
-                           state_transition_count=10.):
+                           state_transition_count=10.,
+                           regularizer=1e-6):
     num_keypoints = len(params['parents'])
     num_cameras =  len(params['camera_matrices'])
     dim = params['camera_matrices'].shape[-1] - 1
     dim_obs = params['camera_matrices'].shape[-2] - 1
     num_states = len(params['state_probability'])
+
+    params['children'] = children_of(params['parents'])
 
     # -----------------------------------
     # Canonical reference frame
@@ -227,9 +230,15 @@ def standardize_parameters(params,
         = tree_graph_laplacian(
             params['parents'],
             1 / params['pos_radial_variance'][...,None,None] * jnp.eye(dim)
-            )
+            ) + regularizer * jnp.eye(num_keypoints*dim)
     params['pos_radial_covariance'] \
         = jnp.linalg.inv(params['pos_radial_precision'])
+
+    assert jnp.all(jnp.linalg.eigvals(params['pos_radial_precision']) > 0.), \
+        f"Expected positive definite radial precision matrix, but got eigenvalues of {jnp.linalg.eigvals(params['pos_radial_precision'])}.\nConsider adjusting value of regularizer."
+    assert jnp.all(jnp.linalg.eigvals(params['pos_radial_covariance']) > 0.), \
+        f"Expected positive definite radial covariance matrix, but got eigenvalues of {jnp.linalg.eigvals(params['pos_radial_covariance'])}.\nConsider adjusting value of regularizer."
+
 
     params['pos_dt_variance'] \
         = jnp.broadcast_to(params['pos_dt_variance'], (num_keypoints,))
@@ -352,6 +361,7 @@ def predict(seed, params, observations, init_positions=None,
     seed = iter(jr.split(seed))
     samples = mcmc.initialize(next(seed), params,
                               observations, init_positions)
+    
 
     return samples
 
