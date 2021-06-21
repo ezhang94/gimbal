@@ -24,39 +24,6 @@ def project(P, Xs):
     ys_h = Xs_h @ P.T
     return ys_h[...,:-1] / ys_h[...,[-1]]
 
-# def project(Ps, Xs, axis=0):
-#     """Project 3D positions to 2D for given camera projection matrices.
-
-#     Parameters
-#     ----------
-#         Ps: ndarray, shape ([C],3,4)
-#             Camera projection matrix
-#         Xs: ndarray, shape (....,3)
-#             3D coordinates in ambient world space
-#         axis: int, optional.
-#             Axis along which to stack multiple views. Default: 0
-        
-#     Returns
-#     -------
-#         ys: ndarray, shape (...,[C],...,2)
-#             2D coordinates in image plane, where C views are stacked 
-#             along the specified axis. If Ps.shape = (3,4), or (1,3,4),
-#             then ys.shape = (...,2).
-#     """
-
-#     def _project(P):
-#         Xs_h = jnp.concatenate([Xs, jnp.ones((*Xs.shape[:-1],1))], axis=-1)
-#         ys_h = Xs_h @ P.T
-#         return ys_h[...,:-1] / ys_h[...,[-1]]
-
-#     # Ensure Ps is at least 3D. Otherwise, add 3rd axis to position 0
-#     # If Ps.shape = (3,4), the below function ensures Ps.shape -> (1,3,4)
-#     # On the otherhand, jnp.atleast_3d(Ps).shape -> (3,4,1).
-#     Ps = Ps.reshape(-1,3,4) 
-
-#     ys = jnp.stack([_project(P) for P in Ps], axis=axis)
-#     return ys.squeeze()
-
 def triangulate_dlt(Ps, ys):
     """Triangulate 3D position between two 2D correspondances using the direct
     linear transformation (DLT) method.
