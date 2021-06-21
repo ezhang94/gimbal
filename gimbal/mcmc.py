@@ -12,7 +12,7 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 
 from util import (triangulate, project,
                   xyz_to_uv, uv_to_xyz, signed_angular_difference,
-                  Rxy_mat)
+                  Rxy_mat, cartesian_to_polar)
 
 def initialize(seed, params, observations, init_positions=None):
     """Initialize latent variables of model.
@@ -178,9 +178,11 @@ def sample_outliers(seed, params, observations, samples):
 
 @jit
 def sample_directions(seed, params, samples):
-    positions = samples['positions']
-    heading = samples['heading']
-    state = samples['pose_state']
+    """Sample directions from 3D von Mises-Fisher distribution."""
+
+    positions = samples['positions']    # (N,K,3)
+    heading = samples['heading']        # (N,)
+    state = samples['pose_state']       # (N,)
     D = positions.shape[-1]
 
     # Rotate mean directional prior (defined in the canonical reference 
@@ -204,3 +206,28 @@ def sample_directions(seed, params, samples):
     directions = directions.at[:,0,:].set(jnp.zeros(D))
 
     return directions
+
+@jit
+def sample_headings(seed, params, samples):
+    """Sample headings from uniform circular distribution."""
+
+    state = samples['pose_state']   # (N,)
+
+    # Polar representation of 3D vectors, array shapes (N,K)
+    mu_thetas, mu_phis = cartesian_to_polar(params['state_directions'][state][:,1:])
+    us_thetas, us_phis = cartesian_to_polar(samples['directions'][:,1:])
+
+    # Update parameters, which we find by solving
+    #   k_likelihood sin(theta_likelihood) = sum w_i sin(theta_i)
+    #   k_likelihood cos(theta_likelihood) = sum w_i cos(theta_i)
+    # Recall: Our prior for headings is vMF with concentration 0
+    # so, theta_post = theta_likelihood, k_post = k_likelihood
+    azim_weights = jnp.sin(mu_phis) * jnp.sin(us_phis)
+    k_sin_thetas = jnp.sum(azim_weights * jnp.sin(us_thetas - mu_thetas), axis=-1)
+    k_cos_thetas = jnp.sum(azim_weights * jnp.cos(us_thetas - mu_thetas), axis=-1)
+
+    theta_post = jnp.arctan2(k_sin_thetas, k_cos_thetas)
+    kappa_post = jnp.sqrt(k_sin_thetas**2 + k_cos_thetas**2)
+    
+    return tfd.VonMises(theta_post, kappa_post).sample(seed=seed)
+    

@@ -72,8 +72,7 @@ class TestMCMC(unittest.TestCase):
 
     def test_directions(self):
 
-        directions = mcmc.sample_directions(self.seed, self.params,
-                                            self.samples)
+        directions = mcmc.sample_directions(self.seed, self.params, self.samples)
 
         self.assertTrue(jnp.all(directions[:,0,:] == 0),
                         msg=f'Expected all root node directions to be undefined (0), got \n{directions[:,0,:]}')
@@ -85,8 +84,22 @@ class TestMCMC(unittest.TestCase):
                                                 jnp.array([0,0,1.]))
         avg_angular_error = jnp.mean(jnp.abs(dtheta), axis=0)
         self.assertTrue(jnp.all(avg_angular_error[1:] < 1),
-                        msg=f'Expected avg angular error < 1 deg, but got {avg_angular_error}')
+                        msg=f'Expected avg angular error < 1 rad, but got {avg_angular_error}')
 
+    def test_headings(self):
+        headings = mcmc.sample_headings(self.seed, self.params, self.samples)
+
+        # On average, heading change from frame-to-frame is small.
+        # Sometimes it is large because of sudden moving, or when animal
+        # is rearing and heading direction is very sensitive to the
+        # SpineM - SpineF direction vector
+        dh = headings[1:] - headings[:-1]
+        dh = (dh + jnp.pi/2) % jnp.pi - jnp.pi/2
+        
+        avg_dh = jnp.mean(jnp.abs(dh))
+
+        self.assertTrue(avg_dh < 1,
+                        msg=f'Expected avg frame-to-frame heading difference < 1, but got {dh}')
 
 # python -m unittest -v test_mcmc.py 
 if __name__ == '__main__':
