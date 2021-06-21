@@ -4,11 +4,15 @@ gimbal/mcmc.py
 
 import jax.numpy as jnp
 import jax.random as jr
-from jax import jit, partial
+from jax import lax, jit, partial
 from jax.scipy.special import logsumexp
+
+import numpy as onp
 
 import tensorflow_probability.substrates.jax as tfp
 import tensorflow_probability.substrates.jax.distributions as tfd
+
+from ssm.messages import hmm_sample
 
 from util import (triangulate, project,
                   xyz_to_uv, uv_to_xyz, signed_angular_difference,
@@ -230,4 +234,52 @@ def sample_headings(seed, params, samples):
     kappa_post = jnp.sqrt(k_sin_thetas**2 + k_cos_thetas**2)
     
     return tfd.VonMises(theta_post, kappa_post).sample(seed=seed)
+
+@jit
+def U_given_S_log_likelihoods(params, samples):
+    """Calculate log likelihood of sampled directions under conditional
+    prior distribution.
+
+    Function seperated from sample_state so that this portion can be jitted.
+    """
+    directions = samples['directions']  # (N, K, 3)
+    heading = samples['heading']        # (N,)
+
+    # Rotate direction in absolute frame to canonical reference frame
+    canonical_directions = jnp.einsum('tmn, tjn-> tjm',
+                                      Rxy_mat(-heading), directions)
+
+    # Calculate log likelihood of each set of directions, for each state
+    # TODO Initialize
+    # shape: (N, S)
+    U_given_S = tfd.VonMisesFisher(params['state_directions'],
+                                   params['state_concentrations'])
+    return jnp.sum(U_given_S.log_prob(canonical_directions[:,None,...]),
+                   axis=-1)
+
+def sample_state(seed, params, samples):
+
+    transition_matrix = samples['transition_matrix']    # shape (S, S)
+
+    lls = U_given_S_log_likelihoods(params, samples)
     
+    # Run forward filter, then backward sampler to draw states
+    # Must move to CPU to sample, then move back to GPU
+    states = hmm_sample(onp.asarray(params['state_probability'], dtype=onp.float64),
+                        onp.asarray(transition_matrix[None, :, :], dtype=onp.float64),
+                        onp.asarray(lls, dtype=onp.float64))
+    return jnp.asarray(states)
+
+@jit
+def sample_transition_matrix(seed, params, samples):
+
+    state = samples['pose_state']   # shape (N,)
+
+    N, S = len(state), len(params['state_transition_count'])
+
+    def count_all(t, counts):
+        return counts.at[state[t], state[t+1]].add(1)
+
+    counts = lax.fori_loop(0, N-1, count_all, jnp.zeros((S, S)))
+
+    return tfd.Dirichlet(params['state_transition_count'] + counts).sample(seed=seed)

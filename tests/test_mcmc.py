@@ -101,6 +101,28 @@ class TestMCMC(unittest.TestCase):
         self.assertTrue(avg_dh < 1,
                         msg=f'Expected avg frame-to-frame heading difference < 1, but got {dh}')
 
+    def test_state_and_transition(self):
+        seed_0, seed_1 = jr.split(self.seed)
+
+        old_state = self.samples['pose_state'].copy()
+        old_matrix = self.samples['transition_matrix'].copy()
+
+        self.samples['pose_state'] = \
+            mcmc.sample_state(seed_0, self.params, self.samples)
+
+        self.samples['transition_matrix'] = \
+            mcmc.sample_transition_matrix(seed_1, self.params, self.samples)
+
+        avg_state_match = jnp.mean(self.samples['pose_state'] == old_state)
+
+        # Check that pose state changed
+        self.assertTrue(avg_state_match < 0.2,
+                        msg=f'Expected sample states to be significantly different from randomly initialized states, but got {avg_state_match*100}% agreement.')
+
+        # Check that transition matrix changed
+        self.assertFalse(jnp.all(old_matrix == self.samples['transition_matrix']),
+                         msg='Do not expect randomly initialized transition matrix to match sampled matrix.')
+
 # python -m unittest -v test_mcmc.py 
 if __name__ == '__main__':
     unittest.main()
