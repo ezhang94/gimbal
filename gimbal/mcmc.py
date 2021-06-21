@@ -11,7 +11,8 @@ import tensorflow_probability.substrates.jax as tfp
 import tensorflow_probability.substrates.jax.distributions as tfd
 
 from util import (triangulate, project,
-                  xyz_to_uv, uv_to_xyz, signed_angular_difference)
+                  xyz_to_uv, uv_to_xyz, signed_angular_difference,
+                  Rxy_mat)
 
 def initialize(seed, params, observations, init_positions=None):
     """Initialize latent variables of model.
@@ -174,3 +175,32 @@ def sample_outliers(seed, params, observations, samples):
     outliers = jnp.where(jnp.isnan(observations[...,0]), True, outliers)
 
     return outliers
+
+@jit
+def sample_directions(seed, params, samples):
+    positions = samples['positions']
+    heading = samples['heading']
+    state = samples['pose_state']
+    D = positions.shape[-1]
+
+    # Rotate mean directional prior (defined in the canonical reference 
+    # frame) into the absolute/ambient reference frame
+    mu_priors = jnp.einsum('tmn, tjn-> tjm',
+                           Rxy_mat(heading), params['state_directions'][state])
+    kappa_priors = params['state_concentrations'][state]
+
+    # Keypoint position contributions to direction vectors
+    dx = positions - positions[:, params['parents']]
+    
+    # Calculate posterior parameters
+    mu_tilde  = kappa_priors[...,None] * mu_priors
+    mu_tilde += dx * (params['pos_radius']/params['pos_radial_variance'])[:,None]
+    
+    mu_post = mu_tilde / jnp.linalg.norm(mu_tilde, axis=-1, keepdims=True)
+    kappa_post = jnp.linalg.norm(mu_tilde, axis=-1)
+    
+    # Sample from posterior
+    directions = tfd.VonMisesFisher(mu_post, kappa_post).sample(seed=seed)
+    directions = directions.at[:,0,:].set(jnp.zeros(D))
+
+    return directions

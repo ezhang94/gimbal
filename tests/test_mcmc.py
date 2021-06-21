@@ -70,6 +70,24 @@ class TestMCMC(unittest.TestCase):
         self.assertTrue(jnp.all(outliers[isnan_mask]),
                         msg='Expected NaN observations to be marked as outliers.')
 
-#   python -m unittest -v test_mcmc.py 
+    def test_directions(self):
+
+        directions = mcmc.sample_directions(self.seed, self.params,
+                                            self.samples)
+
+        self.assertTrue(jnp.all(directions[:,0,:] == 0),
+                        msg=f'Expected all root node directions to be undefined (0), got \n{directions[:,0,:]}')
+
+        # Sampled values should not vary significantly from one step to
+        # the next, so the angular differences should be minimal.
+        dtheta = util.signed_angular_difference(self.samples['directions'],
+                                                directions,
+                                                jnp.array([0,0,1.]))
+        avg_angular_error = jnp.mean(jnp.abs(dtheta), axis=0)
+        self.assertTrue(jnp.all(avg_angular_error[1:] < 1),
+                        msg=f'Expected avg angular error < 1 deg, but got {avg_angular_error}')
+
+
+# python -m unittest -v test_mcmc.py 
 if __name__ == '__main__':
     unittest.main()
