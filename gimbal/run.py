@@ -4,7 +4,9 @@ import jax.numpy as jnp
 import jax.random as jr
 
 import mcmc
-from util import (tree_graph_laplacian, children_of)
+import util_io
+
+from tqdm.auto import trange
 
 # =====================================================================
 
@@ -199,136 +201,10 @@ def fit(positions,
 
 # =====================================================================
 
-def standardize_parameters(params,
-                           pos_location_0=0., pos_variance_0=1e8,
-                           state_transition_count=10.,
-                           regularizer=1e-6):
-    num_keypoints = len(params['parents'])
-    num_cameras =  len(params['camera_matrices'])
-    dim = params['camera_matrices'].shape[-1] - 1
-    dim_obs = params['camera_matrices'].shape[-2] - 1
-    num_states = len(params['state_probability'])
-
-    params['children'] = children_of(params['parents'])
-
-    # -----------------------------------
-    # Canonical reference frame
-    # -----------------------------------
-    x_axis, z_axis = params['crf_abscissa'], params['crf_normal']
-    y_axis = jnp.cross(z_axis, x_axis)
-    params['crf_axes'] = jnp.stack([x_axis, y_axis, z_axis], axis=0)
-
-    # -----------------------------------
-    # Skeletal and positional parameters
-    # -----------------------------------
-    params['pos_radius'] \
-        = jnp.broadcast_to(params['pos_radius'], (num_keypoints,))
-
-    params['pos_radial_variance'] \
-        = jnp.broadcast_to(params['pos_radial_variance'], (num_keypoints,))
-    params['pos_radial_precision'] \
-        = tree_graph_laplacian(
-            params['parents'],
-            1 / params['pos_radial_variance'][...,None,None] * jnp.eye(dim)
-            ) + regularizer * jnp.eye(num_keypoints*dim)
-    params['pos_radial_covariance'] \
-        = jnp.linalg.inv(params['pos_radial_precision'])
-
-    assert jnp.all(jnp.linalg.eigvals(params['pos_radial_precision']) > 0.), \
-        f"Expected positive definite radial precision matrix, but got eigenvalues of {jnp.linalg.eigvals(params['pos_radial_precision'])}.\nConsider adjusting value of regularizer."
-    assert jnp.all(jnp.linalg.eigvals(params['pos_radial_covariance']) > 0.), \
-        f"Expected positive definite radial covariance matrix, but got eigenvalues of {jnp.linalg.eigvals(params['pos_radial_covariance'])}.\nConsider adjusting value of regularizer."
-
-
-    params['pos_dt_variance'] \
-        = jnp.broadcast_to(params['pos_dt_variance'], (num_keypoints,))
-    params['pos_dt_covariance'] \
-        = jnp.kron(jnp.diag(params['pos_dt_variance']), jnp.eye(dim))
-    params['pos_dt_precision'] \
-        = jnp.kron(jnp.diag(1./params['pos_dt_variance']), jnp.eye(dim))
-
-    params['pos_precision_t'] \
-        = params['pos_radial_precision'] + params['pos_dt_precision']
-    params['pos_covariance_t'] \
-        = jnp.linalg.inv(params['pos_precision_t'])
-
-    params['pos_variance_0'] \
-        = jnp.broadcast_to(
-                params.get('pos_variance_0', pos_variance_0),
-                (num_keypoints,))
-    params['pos_covariance_0'] \
-        = jnp.kron(jnp.diag(params['pos_variance_0']), jnp.eye(dim))
-
-    params['pos_location_0'] \
-        = jnp.broadcast_to(
-                params.get('pos_location_0', pos_location_0),
-                (num_keypoints, dim))
-
-    # -----------------------------
-    # Observation error parameters
-    # -----------------------------
-    params['obs_outlier_probability'] \
-        = jnp.broadcast_to(
-                params['obs_outlier_probability'],
-                (num_cameras, num_keypoints))
-
-    params['obs_outlier_location'] \
-        = jnp.broadcast_to(
-                params['obs_outlier_location'],
-                (num_cameras, num_keypoints, dim_obs))
-    params['obs_outlier_variance'] \
-        = jnp.broadcast_to(
-                params['obs_outlier_variance'],
-                (num_cameras, num_keypoints))
-    params['obs_outlier_covariance'] \
-        = jnp.kron(
-                params['obs_outlier_variance'][..., None, None],
-                jnp.eye(dim_obs))
-
-    params['obs_inlier_location'] \
-        = jnp.broadcast_to(
-                params['obs_inlier_location'],
-                (num_cameras, num_keypoints, dim_obs))
-    params['obs_inlier_variance'] \
-        = jnp.broadcast_to(
-                params['obs_inlier_variance'],
-                (num_cameras, num_keypoints))
-    params['obs_inlier_covariance'] \
-        = jnp.kron(
-                params['obs_inlier_variance'][..., None, None],
-                jnp.eye(dim_obs))
-
-    # -----------------------------
-    # Pose state parameters
-    # -----------------------------
-    params['state_transition_count'] \
-        = jnp.broadcast_to(
-                params.get('state_transition_count', state_transition_count),
-                (num_states,))
-    
-    params['state_probability'] \
-        = jnp.broadcast_to(
-                params.get('state_probability', 1./num_states),
-                (num_states,))
-
-    params['state_directions'] \
-        = jnp.broadcast_to(
-                params.get('state_directions', jnp.array([0,0,1.])),
-                (num_states, num_keypoints, dim))
-
-    params['state_concentrations'] \
-        = jnp.broadcast_to(
-                params.get('state_concentrations', 0.),
-                (num_states, num_keypoints))
-    
-    return params
-
-# =====================================================================
-
 def predict(seed, params, observations, init_positions=None,
             num_mcmc_iterations=1000,
             hmc_options={'init_step_size':1e-1, 'num_leapfrog_steps':1},
-            out_options={}
+            out_options={},
             ):
     """Predict latent variables from observations using MCMC sampling.
 
@@ -346,7 +222,7 @@ def predict(seed, params, observations, init_positions=None,
             If empty (default), samples are not saved. Else, samples are
             saved to HDF5 according to the specified items:
                 path: str
-                chunksize:
+                chunk_size:
                 thinning: int, optional.
                 burnin: int, optional
                 variables: list, optional
@@ -356,15 +232,65 @@ def predict(seed, params, observations, init_positions=None,
     -------
     """
 
-    params = standardize_parameters(params)
+    # Initialize
+    seed, init_seed = jr.split(seed, 2)
 
-    seed = iter(jr.split(seed))
-    samples = mcmc.initialize(next(seed), params,
+    params = mcmc.initialize_parameters(params)
+    samples = mcmc.initialize(init_seed, params,
                               observations, init_positions)
+    samples['log_probability'] = \
+            mcmc.log_joint_probability(params, observations, *samples.values())
+
+    # Enable timing, if specified. Add appropriate key to `init_dict` to save.
+
+    # Enable chunked saving, if specified
+    init_dict = samples
+    if not out_options: # If no out options specified
+        Fout = util_io.SavePredictionsToDict(init_dict)
+        chunk_size = num_mcmc_iterations
+    else:
+        Fout = util_io.SavePredictionsToHDF(
+                    out_options['path'], init_dict,
+                    max_iter = num_mcmc_iterations,
+                    **out_options.get('hdf_kwargs', {}))
+        chunk_size = out_options.get('chunk_size', num_mcmc_iterations)
+
+    # Setup progress bar
+    pbar = trange(num_mcmc_iterations)
+    pbar.set_description("lp={:.4f}".format(samples['log_probability']))
+
+    buffer = {k: jnp.empty((chunk_size, *v.shape), dtype=v.dtype)
+              for k, v in init_dict.items()}
+    with Fout as out:
+        for itr in pbar:
+
+            samples, kernel_results = \
+                mcmc.step(jr.fold_in(seed, itr), params, observations, samples)
+
+            # ------------------------------------------------------------------
+            # Update the progress bar
+            pbar.set_description("lp={:.4f}".format(samples['log_probability']))
+            pbar.update(1)
+
+            # Save
+            for k, v in buffer.items():
+                buffer[k] = buffer[k].at[itr % chunk_size].set(samples[k])
+            
+            if (chunk_size is not None) and ((itr+1) % chunk_size == 0):
+                out.update(buffer)
+        
+        
+        # Store final chunk of samples, if needed
+        if (chunk_size is None) or (itr+1) % chunk_size != 0:
+            for k, v in buffer.items():
+                buffer[k] = buffer[k][:itr % chunk_size + 1]
+            
+            out.update(buffer)
     
+    # import pdb
+    # pdb.set_trace()
 
-    return samples
-
+    return samples, Fout.obj
 
 if __name__ == "__main__":
     pass

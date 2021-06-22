@@ -60,3 +60,88 @@ def load_parameters(file, to_device_array=True):
             params[k] = np.asarray(f[k])
 
     return params
+
+# -------------------
+# Saving predictions
+# -------------------
+
+class SavePredictions():
+    """Base class for saving GIMBAL predictions"""
+    def __init__(self):
+        self._obj = None
+
+    @property
+    def obj(self,):
+        return self._obj
+
+    def __enter__(self,):
+        return self
+    
+    def __exit__(self, exc_type, exc_value, tb):
+        return
+
+    def update(self, samples):
+        """Update storage object with latest samples.
+
+        Parameters
+        ----------
+            samples: dict of lists of ndarrays
+        Returns
+        -------
+            None
+        """
+        raise NotImplementederror
+
+class SavePredictionsToHDF(SavePredictions):
+    def __init__(self, path, init_samples, max_iter=None,
+                 mode='w', hdf_kwargs={}):
+        
+        self.path = path
+        self._obj = h5py.File(path, mode, **hdf_kwargs)
+        
+        for k,v in init_samples.items():
+            self._obj.create_dataset(k, (0, *v.shape), dtype=v.dtype,
+                                  maxshape=(max_iter, *v.shape),
+                                  compression='gzip')
+    
+    @property
+    def obj(self,):
+        return self.path
+    
+    def __exit__(self,exc_type, exc_value, tb):
+        if exc_type is not None:
+            import traceback
+            traceback.print_exception(exc_type, exc_value, tb)
+        self._obj.close()
+        return
+    
+    def update(self, samples):
+        """Update HDF datasets with new samples."""
+    
+        for k, v in samples.items():
+            N = len(v)
+            self._obj[k].resize(len(self._obj[k]) + N, axis=0)
+            self._obj[k][-N:] = jnp.stack(v, axis=0)
+        return
+
+class SavePredictionsToDict(SavePredictions):
+    def __init__(self, init_samples):
+        self._obj = dict.fromkeys(init_samples.keys(), [])
+    
+    def __exit__(self, exc_type, exc_value, tb):
+        if exc_type is not None:
+            import traceback
+            traceback.print_exception(exc_type, exc_value, tb)
+        # Upon exit, stack all samples along first axis into single ndarray.
+        try:
+            for k, v in self._obj.items():
+                self._obj[k] = jnp.stack(v, axis=0)
+        except:
+            pass
+        return
+
+    def update(self, samples):
+        """Update dictionary with new samples."""
+        for k, v in samples:
+            self._obj[k].extend(v)
+        return

@@ -4,7 +4,7 @@ Test modules of gimbal/mcmc.py
 To run all tests:
   $ python -m unittest -v test_mcmc.py 
 To run a single test:
-  $ python test_mcmc.py TestCaseClass.test_name
+  $ python test_mcmc.py <TestCaseClass>.<test_name>
 """
 
 import unittest
@@ -20,6 +20,8 @@ from jax import jit
 import jax.numpy as jnp
 import jax.random as jr
 
+import h5py
+
 class TestMCMC(unittest.TestCase):
     def setUp(self):
         N = 100
@@ -31,7 +33,7 @@ class TestMCMC(unittest.TestCase):
             self.positions = jnp.asarray(f['groundtruth_pos_3d'][:N])   # shape (N, K, 3)
 
         self.params = util_io.load_parameters(PARAMS)
-        self.params = run.standardize_parameters(self.params)
+        self.params = mcmc.initialize_parameters(self.params)
 
         seed = jr.PRNGKey(123)
         self.seed, init_seed = jr.split(seed)
@@ -70,6 +72,7 @@ class TestMCMC(unittest.TestCase):
                         msg=f'Expected finite valued log probability, but got {lp}.')
 
     def test_positions(self):
+        print("Initializing HMC sampler, this may take a while...")
         positions, kernel_results = \
             mcmc.sample_positions(self.seed, self.params,
                                   self.observations, self.samples,
@@ -86,6 +89,8 @@ class TestMCMC(unittest.TestCase):
                         msg=f'Expected average gradients to be on order 1e0, but got {avg_gradient}.')
 
         self.assertFalse(jnp.allclose(self.samples['positions'], positions))
+
+        print('Confirm that test time takes ~200 s on CPU and ~60 s on GPU.')
 
     def test_outliers(self):
         mocap2d = jnp.stack(
@@ -163,5 +168,58 @@ class TestMCMC(unittest.TestCase):
         self.assertFalse(jnp.all(old_matrix == self.samples['transition_matrix']),
                          msg='Do not expect randomly initialized transition matrix to match sampled matrix.')
 
+class TestPredict(unittest.TestCase):
+    def setUp(self):
+        N = 100
+        
+        with jnp.load(DATA) as f:
+            self.observations = jnp.asarray(f['observed_pos_2d'][:N])           # shape (N, C, 3, 4)
+            self.init_positions = \
+                            jnp.asarray(f['triangulated_pos_3d'][:N])           # shape (N, C, 3)
+            self.positions = jnp.asarray(f['groundtruth_pos_3d'][:N])           # shape (N, K, 3)
+
+        self.params = util_io.load_parameters(PARAMS)
+        self.params = mcmc.initialize_parameters(self.params)
+    
+    def test_output_as_dict(self):
+        seed = jr.PRNGKey(123)
+        
+        num_iter = 10 
+        samples, all_samples = \
+                run.predict(seed, self.params, self.observations, 
+                            num_mcmc_iterations=num_iter)
+
+
+
+        # Samples should all have length (num_iter,)
+        self.assertTrue(all([len(v) == num_iter for v in all_samples.values()]),
+                        msg=f"Expected all elements to have {num_iter} samples, but got {[len(v) for v in all_samples.values()]}")
+
+        # Log probability should increase with iteration
+        lps = all_samples['log_probability']
+        self.assertTrue(jnp.mean((lps[1:] - lps[:-1]) > 0) > 0.6,
+                        msg=f"Expected log probability to increase on average with iteration, but got log probabilities of \n    {lps}\n differences of \n    {lps[1:] - lps[:-1]}")
+
+    def test_save_to_h5py(self):
+        seed = jr.PRNGKey(123)
+        
+        num_iter = 11
+        samples, out_path = \
+                run.predict(seed, self.params, self.observations, 
+                            num_mcmc_iterations=num_iter,
+                            out_options={'path':'test.hdf5', 'chunk_size':2})
+
+        with h5py.File(out_path) as f:
+            sample_keys = list(f)
+            
+            # Samples should all have length (num_iter,)
+            self.assertTrue(all([len(f[k]) == num_iter for k in sample_keys]),
+                            msg=f"Expected all elements to have {num_iter} samples, but got {[len(f[k]) for k in sample_keys]}")
+
+            # Log probability should increase with iteration
+            lps = f['log_probability']
+            self.assertTrue(jnp.mean((lps[1:] - lps[:-1]) > 0) > 0.6,
+                        msg=f"Expected log probability to increase on average with iteration, but got log probabilities of \n    {lps}\n differences of \n    {lps[1:] - lps[:-1]}")
+        
 if __name__ == '__main__':
     unittest.main()
