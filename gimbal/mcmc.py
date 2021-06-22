@@ -1,4 +1,4 @@
-""""
+"""
 gimbal/mcmc.py
 """
 
@@ -7,17 +7,141 @@ import jax.random as jr
 from jax import lax, jit, partial, vmap
 from jax.scipy.special import logsumexp
 
-import numpy as onp
-
 import tensorflow_probability.substrates.jax as tfp
 import tensorflow_probability.substrates.jax.distributions as tfd
 
 from ssm.messages import hmm_sample
 
+import numpy as onp
+
 from util import (triangulate, project,
                   xyz_to_uv, uv_to_xyz, signed_angular_difference,
                   Rxy_mat, cartesian_to_polar,
-                  hvmfg_natural_parameter,)
+                  children_of, tree_graph_laplacian, hvmfg_natural_parameter,)
+
+def initialize_parameters(params,
+                          pos_location_0=0., pos_variance_0=1e8,
+                          state_transition_count=10.,
+                          regularizer=1e-6):
+    num_keypoints = len(params['parents'])
+    num_cameras =  len(params['camera_matrices'])
+    dim = params['camera_matrices'].shape[-1] - 1
+    dim_obs = params['camera_matrices'].shape[-2] - 1
+    num_states = len(params['state_probability'])
+
+    params['children'] = children_of(params['parents'])
+
+    # -----------------------------------
+    # Canonical reference frame
+    # -----------------------------------
+    x_axis, z_axis = params['crf_abscissa'], params['crf_normal']
+    y_axis = jnp.cross(z_axis, x_axis)
+    params['crf_axes'] = jnp.stack([x_axis, y_axis, z_axis], axis=0)
+
+    # -----------------------------------
+    # Skeletal and positional parameters
+    # -----------------------------------
+    params['pos_radius'] \
+        = jnp.broadcast_to(params['pos_radius'], (num_keypoints,))
+
+    params['pos_radial_variance'] \
+        = jnp.broadcast_to(params['pos_radial_variance'], (num_keypoints,))
+    params['pos_radial_precision'] \
+        = tree_graph_laplacian(
+            params['parents'],
+            1 / params['pos_radial_variance'][...,None,None] * jnp.eye(dim)
+            ) + regularizer * jnp.eye(num_keypoints*dim)
+    params['pos_radial_covariance'] \
+        = jnp.linalg.inv(params['pos_radial_precision'])
+
+    # NB: Using jnp.linalg.eigvals throws the NotImplementedError with message "Nonsymmetric eigendecomposition is only implemented on the CPU backend. However, these matrices ARE symmetric...
+    assert jnp.all(onp.linalg.eigvals(params['pos_radial_precision']) > 0.), \
+        f"Expected positive definite radial precision matrix, but got eigenvalues of {jnp.linalg.eigvals(params['pos_radial_precision'])}.\nConsider adjusting value of regularizer."
+    assert jnp.all(onp.linalg.eigvals(params['pos_radial_covariance']) > 0.), \
+        f"Expected positive definite radial covariance matrix, but got eigenvalues of {jnp.linalg.eigvals(params['pos_radial_covariance'])}.\nConsider adjusting value of regularizer."
+
+    params['pos_dt_variance'] \
+        = jnp.broadcast_to(params['pos_dt_variance'], (num_keypoints,))
+    params['pos_dt_covariance'] \
+        = jnp.kron(jnp.diag(params['pos_dt_variance']), jnp.eye(dim))
+    params['pos_dt_precision'] \
+        = jnp.kron(jnp.diag(1./params['pos_dt_variance']), jnp.eye(dim))
+
+    params['pos_precision_t'] \
+        = params['pos_radial_precision'] + params['pos_dt_precision']
+    params['pos_covariance_t'] \
+        = jnp.linalg.inv(params['pos_precision_t'])
+
+    params['pos_variance_0'] \
+        = jnp.broadcast_to(
+                params.get('pos_variance_0', pos_variance_0),
+                (num_keypoints,))
+    params['pos_covariance_0'] \
+        = jnp.kron(jnp.diag(params['pos_variance_0']), jnp.eye(dim))
+
+    params['pos_location_0'] \
+        = jnp.broadcast_to(
+                params.get('pos_location_0', pos_location_0),
+                (num_keypoints, dim))
+
+    # -----------------------------
+    # Observation error parameters
+    # -----------------------------
+    params['obs_outlier_probability'] \
+        = jnp.broadcast_to(
+                params['obs_outlier_probability'],
+                (num_cameras, num_keypoints))
+
+    params['obs_outlier_location'] \
+        = jnp.broadcast_to(
+                params['obs_outlier_location'],
+                (num_cameras, num_keypoints, dim_obs))
+    params['obs_outlier_variance'] \
+        = jnp.broadcast_to(
+                params['obs_outlier_variance'],
+                (num_cameras, num_keypoints))
+    params['obs_outlier_covariance'] \
+        = jnp.kron(
+                params['obs_outlier_variance'][..., None, None],
+                jnp.eye(dim_obs))
+
+    params['obs_inlier_location'] \
+        = jnp.broadcast_to(
+                params['obs_inlier_location'],
+                (num_cameras, num_keypoints, dim_obs))
+    params['obs_inlier_variance'] \
+        = jnp.broadcast_to(
+                params['obs_inlier_variance'],
+                (num_cameras, num_keypoints))
+    params['obs_inlier_covariance'] \
+        = jnp.kron(
+                params['obs_inlier_variance'][..., None, None],
+                jnp.eye(dim_obs))
+
+    # -----------------------------
+    # Pose state parameters
+    # -----------------------------
+    params['state_transition_count'] \
+        = jnp.broadcast_to(
+                params.get('state_transition_count', state_transition_count),
+                (num_states,))
+    
+    params['state_probability'] \
+        = jnp.broadcast_to(
+                params.get('state_probability', 1./num_states),
+                (num_states,))
+
+    params['state_directions'] \
+        = jnp.broadcast_to(
+                params.get('state_directions', jnp.array([0,0,1.])),
+                (num_states, num_keypoints, dim))
+
+    params['state_concentrations'] \
+        = jnp.broadcast_to(
+                params.get('state_concentrations', 0.),
+                (num_states, num_keypoints))
+    
+    return params
 
 def initialize(seed, params, observations, init_positions=None):
     """Initialize latent variables of model.
@@ -111,8 +235,9 @@ def initialize(seed, params, observations, init_positions=None):
         directions=directions,
         heading=heading,
         pose_state=pose_state,
-        transition_matrix=transition_matrix,
+        transition_matrix=transition_matrix
     )
+
 
 @jit
 def log_joint_probability(params, observations,
@@ -241,7 +366,8 @@ def log_joint_probability(params, observations,
     lp += jnp.sum(jnp.log(params['state_probability']))
 
     return lp
-
+    
+@jit
 def sample_positions(seed, params, observations, samples,
                      step_size=1e-1, num_leapfrog_steps=1):
     """Sample positions by taking one Hamiltonian Monte Carlo step."""
@@ -418,3 +544,42 @@ def sample_transition_matrix(seed, params, samples):
     counts = lax.fori_loop(0, N-1, count_all, jnp.zeros((S, S)))
 
     return tfd.Dirichlet(params['state_transition_count'] + counts).sample(seed=seed)
+
+# Cannot jit because smaple_state requires moving arrays to CPU
+# @jit
+def step(seed, params, observations, samples):
+    """Execute a single iteration of MCMC sampling."""
+    seeds = jr.split(seed, 6)
+    
+    positions, kernel_results = \
+                    sample_positions(seeds[0], params, observations, samples)
+    samples['positions'] = positions
+
+    samples['outliers'] = \
+                    sample_outliers(seeds[1], params, observations, samples)
+
+    samples['directions'] = \
+                    sample_directions(seeds[2], params, samples)
+
+    samples['heading'] = \
+                    sample_headings(seeds[3], params, samples)
+    
+    samples['pose_state'] = \
+                    sample_state(seeds[4], params, samples)
+    
+    samples['transition_matrix'] = \
+                    sample_transition_matrix(seeds[5], params, samples)
+    
+    samples['log_probability'] = log_joint_probability(
+                        params, observations,
+                        samples['outliers'],
+                        samples['positions'], samples['directions'],
+                        samples['heading'], samples['pose_state'],
+                        samples['transition_matrix'],
+                        )
+    return samples, kernel_results
+
+if __name__ == '__main__':
+    pass 
+    # import sys
+    # predict(sys.argvs)
