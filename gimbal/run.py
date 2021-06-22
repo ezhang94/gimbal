@@ -1,3 +1,6 @@
+import jax.config
+jax.config.update("jax_enable_x64", True)
+
 import os
 import numpy as onp
 import jax.numpy as jnp
@@ -217,7 +220,9 @@ def predict(seed, params, observations, init_positions=None,
             Initial guess of 3D positions. If None (default), initial
             guess made from observations in mcmc.initialize
         num_mcmc_iterations: int
-        hmc_options: dict, optional
+        hmc_options: dict, optional.
+            num_leapfrog_steps: Integration step size.
+            step_size:
         out_options: dict, optional
             If empty (default), samples are not saved. Else, samples are
             saved to HDF5 according to the specified items:
@@ -225,8 +230,10 @@ def predict(seed, params, observations, init_positions=None,
                 chunk_size:
                 thinning: int, optional.
                 burnin: int, optional
-                variables: list, optional
-            default: {}, do not save.
+                variables: list, optional. default: [] (all)
+                save_hmc_results: bool, optional. default: False
+                    If True, save kernel results of HMC positions sampler at each iteration. Useful for tuning leapfro
+            default: {} (do not save)
 
     Returns
     -------
@@ -238,8 +245,6 @@ def predict(seed, params, observations, init_positions=None,
     params = mcmc.initialize_parameters(params)
     samples = mcmc.initialize(init_seed, params,
                               observations, init_positions)
-    samples['log_probability'] = \
-            mcmc.log_joint_probability(params, observations, *samples.values())
 
     # Enable timing, if specified. Add appropriate key to `init_dict` to save.
 
@@ -257,7 +262,7 @@ def predict(seed, params, observations, init_positions=None,
 
     # Setup progress bar
     pbar = trange(num_mcmc_iterations)
-    pbar.set_description("lp={:.4f}".format(samples['log_probability']))
+    pbar.set_description("lp={:.2f}".format(samples['log_probability']))
 
     buffer = {k: jnp.empty((chunk_size, *v.shape), dtype=v.dtype)
               for k, v in init_dict.items()}
@@ -269,7 +274,7 @@ def predict(seed, params, observations, init_positions=None,
 
             # ------------------------------------------------------------------
             # Update the progress bar
-            pbar.set_description("lp={:.4f}".format(samples['log_probability']))
+            pbar.set_description("lp={:.2f}".format(samples['log_probability']))
             pbar.update(1)
 
             # Save
@@ -286,11 +291,8 @@ def predict(seed, params, observations, init_positions=None,
                 buffer[k] = buffer[k][:itr % chunk_size + 1]
             
             out.update(buffer)
-    
-    # import pdb
-    # pdb.set_trace()
 
-    return samples, Fout.obj
+    return Fout.obj
 
 if __name__ == "__main__":
     pass
