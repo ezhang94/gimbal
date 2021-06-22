@@ -142,6 +142,6 @@ class SavePredictionsToDict(SavePredictions):
 
     def update(self, samples):
         """Update dictionary with new samples."""
-        for k, v in samples:
+        for k, v in samples.items():
             self._obj[k].extend(v)
         return
