@@ -30,6 +30,17 @@ def initialize_parameters(params,
     dim_obs = params['camera_matrices'].shape[-2] - 1
     num_states = len(params['state_probability'])
 
+    # Must explicitly cast arrays (that are not results of calculations) to
+    # desired dtype. For example, if we are in x64 mode and we have
+    #   arr = jnp.array([1,2,3], dtype=jnp.float32)
+    # the following operations preserve original dtype (undesirable)
+    #   jnp.broadcast_to(arr, arr.shape) -> jnp.float32
+    #   jnp.asarray(arr) -> jnp.float32
+    #   jnp.array(arr) -> jnp.float32
+    # The following operation changes dtype
+    #   arr.asdtype(jnp.float64) -> jnp.float64
+    dtype = jnp.float64 if jax.config.read('jax_enable_x64') else jnp.float32
+
     params['children'] = children_of(params['parents'])
 
     # -----------------------------------
@@ -43,10 +54,12 @@ def initialize_parameters(params,
     # Skeletal and positional parameters
     # -----------------------------------
     params['pos_radius'] \
-        = jnp.broadcast_to(params['pos_radius'], (num_keypoints,))
+        = jnp.broadcast_to(params['pos_radius'], (num_keypoints,))\
+             .astype(dtype)
 
     params['pos_radial_variance'] \
-        = jnp.broadcast_to(params['pos_radial_variance'], (num_keypoints,))
+        = jnp.broadcast_to(params['pos_radial_variance'], (num_keypoints,))\
+             .astype(dtype)
     params['pos_radial_precision'] \
         = tree_graph_laplacian(
             params['parents'],
@@ -62,7 +75,8 @@ def initialize_parameters(params,
         f"Expected positive definite radial covariance matrix, but got eigenvalues of {jnp.linalg.eigvals(params['pos_radial_covariance'])}.\nConsider adjusting value of regularizer."
 
     params['pos_dt_variance'] \
-        = jnp.broadcast_to(params['pos_dt_variance'], (num_keypoints,))
+        = jnp.broadcast_to(params['pos_dt_variance'], (num_keypoints,))\
+             .astype(dtype)
     params['pos_dt_covariance'] \
         = jnp.kron(jnp.diag(params['pos_dt_variance']), jnp.eye(dim))
     params['pos_dt_precision'] \
