@@ -2,6 +2,10 @@
 gimbal/mcmc.py
 """
 
+import contextlib
+import numpy as onp
+from tqdm.auto import trange
+
 import jax.config
 import jax.numpy as jnp
 import jax.random as jr
@@ -13,12 +17,11 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 
 from ssm.messages import hmm_sample
 
-import numpy as onp
-
 from util import (triangulate, project,
                   xyz_to_uv, uv_to_xyz, signed_angular_difference,
                   Rxy_mat, cartesian_to_polar,
                   children_of, tree_graph_laplacian, hvmfg_natural_parameter,)
+import util_io
 
 def initialize_parameters(params,
                           pos_location_0=0., pos_variance_0=1e8,
@@ -319,6 +322,10 @@ def initialize(seed, params, observations, init_positions=None):
     else:
         positions = jnp.asarray(init_positions)
 
+    # Initialize HMC results
+    hmc_log_accept_ratio = jnp.array(0.)
+    hmc_proposed_gradients = jnp.empty_like(positions)
+
     # --------------------------
     # Derive initial directions
     # --------------------------
@@ -383,7 +390,9 @@ def initialize(seed, params, observations, init_positions=None):
         heading=heading,
         pose_state=pose_state,
         transition_matrix=transition_matrix,
-        log_probability=log_prob
+        log_probability=log_prob,
+        hmc_log_accept_ratio=hmc_log_accept_ratio,
+        hmc_proposed_gradients=hmc_proposed_gradients,
     )
   
 @jit
@@ -573,6 +582,9 @@ def step(seed, params, observations, samples):
     positions, kernel_results = \
                     sample_positions(seeds[0], params, observations, samples)
     samples['positions'] = positions
+    samples['hmc_log_accept_ratio'] = kernel_results.log_accept_ratio
+    samples['hmc_proposed_gradients'] = \
+                    kernel_results.proposed_results.grads_target_log_prob[0]
 
     samples['outliers'] = \
                     sample_outliers(seeds[1], params, observations, samples)
@@ -596,9 +608,96 @@ def step(seed, params, observations, samples):
                         samples['heading'], samples['pose_state'],
                         samples['transition_matrix'],
                         )
-    return samples, kernel_results
+    return samples
 
-if __name__ == '__main__':
-    pass 
-    # import sys
-    # predict(sys.argvs)
+def predict(seed, params, observations, init_positions=None,
+            num_mcmc_iterations=1000,
+            enable_x64=False,
+            hmc_options={'init_step_size':1e-1, 'num_leapfrog_steps':1},
+            out_options={},
+            ):
+    """Predict latent pose variables from observations using MCMC sampling.
+
+    Parameters
+    ----------
+        seed: jax.random.PRNGKey
+        params: dict
+        observations: ndarray, shape (N, C, K, D_obs)
+        init_positions: None or ndarray, shape (N, K, D), optional
+            Initial guess of 3D positions. If None (default), initial
+            guess made from observations in mcmc.initialize
+        num_mcmc_iterations: int
+        enable_x64: bool, optional. default: False
+            If True, enable jax computations with double precision (float64).
+            Else, perform computations with single precision (float32).
+        hmc_options: dict, optional.
+            step_size: int. Step size per leapfrog integration.
+                Larger step sizes lead to faster progress, but too-large step sizes make rejection exponentially more likely. When possible, it's often helpful to match per-variable step sizes to the standard deviations of the target distribution in each variable.
+            num_leapfrog_steps: int. Number of leapfrog steps to take.
+        out_options: dict, optional. If empty (default), samples are not saved. 
+            path: str. Path to which to save file.
+            chunk_size: int, optional. MCMC iteration interval at which to save.
+                Large chunk size reduces I/O overhead of writing to memory, but requires larger local memory to store sample outputs.
+
+    Returns
+    -------
+        buffer, dict
+            Contains last chunk_size of samples
+    """
+
+    # Enable double-precision if specified
+    jax.config.update("jax_enable_x64", enable_x64)
+
+    # Initialize
+    seed, init_seed = jr.split(seed, 2)
+
+    params = initialize_parameters(params)
+    samples = initialize(init_seed, params,
+                              observations, init_positions)
+
+    # Initialize buffer and output file (if specified)
+    chunk_size = out_options.get('chunk_size', num_mcmc_iterations)
+    burnin = out_options.get('burnin', 0)
+
+    hdf5_output = None
+    if isinstance(out_options.get('path', None), str):
+        hdf5_output = util_io.SavePredictionsToHDF(
+                                        out_options['path'], samples,
+                                        max_iter = num_mcmc_iterations-burnin,
+                                        chunk_size=chunk_size,
+                                        **out_options.get('hdf_kwargs', {}))
+    
+    buffer = {k: jnp.empty((chunk_size, *v.shape), dtype=v.dtype)
+              for k, v in samples.items()}
+
+    # Setup progress bar
+    pbar = trange(num_mcmc_iterations)
+    pbar.set_description("lp={:.2f}".format(samples['log_probability']))
+    
+    for itr in pbar:
+        samples = \
+            step(jr.fold_in(seed, itr), params, observations, samples)
+
+        # ------------------------------------------------------------------
+        # Update the progress bar
+        pbar.set_description("lp={:.2f}".format(samples['log_probability']))
+        pbar.update(1)
+
+        # Update buffer
+        for k, v in buffer.items():
+            buffer[k] = buffer[k].at[itr % chunk_size].set(samples[k])
+            
+        # Save chunk
+        if (hdf5_output is not None):
+            if (itr >= burnin) and (itr+1) % chunk_size == 0:
+                hdf5_output.update(buffer)
+    
+    # Store final chunk of samples, if needed
+    if (hdf5_output is not None) and (itr+1) % chunk_size != 0:
+        # Truncate buffer to only contain not-yet-written samples
+        for k, v in buffer.items():
+            buffer[k] = buffer[k][:itr % chunk_size + 1]
+        
+        hdf5_output.update(buffer)
+
+    return buffer

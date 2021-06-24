@@ -8,6 +8,12 @@ To run a single test:
 """
 
 import unittest
+import os
+import h5py
+
+from jax import jit
+import jax.numpy as jnp
+import jax.random as jr
 
 from context import (DATA, PARAMS)
 import util_io
@@ -15,12 +21,6 @@ import util
 
 import mcmc
 import run
-
-from jax import jit
-import jax.numpy as jnp
-import jax.random as jr
-
-import h5py
 
 class TestMCMC(unittest.TestCase):
     def setUp(self):
@@ -181,15 +181,13 @@ class TestPredict(unittest.TestCase):
         self.params = util_io.load_parameters(PARAMS)
         self.params = mcmc.initialize_parameters(self.params)
     
-    def test_output_as_dict(self):
+    def test_output_to_dict(self):
         seed = jr.PRNGKey(123)
         
         num_iter = 10 
-        samples, all_samples = \
-                run.predict(seed, self.params, self.observations, 
+        all_samples = \
+                mcmc.predict(seed, self.params, self.observations, 
                             num_mcmc_iterations=num_iter)
-
-
 
         # Samples should all have length (num_iter,)
         self.assertTrue(all([len(v) == num_iter for v in all_samples.values()]),
@@ -200,13 +198,17 @@ class TestPredict(unittest.TestCase):
         self.assertTrue(jnp.mean((lps[1:] - lps[:-1]) > 0) > 0.6,
                         msg=f"Expected log probability to increase on average with iteration, but got log probabilities of \n    {lps}\n differences of \n    {lps[1:] - lps[:-1]}")
 
-    def test_save_to_h5py(self):
+        self.assertTrue(all_samples['positions'].dtype == jnp.float32,
+                        msg=f"Did not enable double precision. Expected float32 dtype, but got {all_samples['positions'].dtype} dtype.")
+
+    def test_output_to_hdf5(self):
         seed = jr.PRNGKey(123)
         
         num_iter = 11
-        samples, out_path = \
-                run.predict(seed, self.params, self.observations, 
+        out_path = \
+                mcmc.predict(seed, self.params, self.observations, 
                             num_mcmc_iterations=num_iter,
+                            enable_x64=True,
                             out_options={'path':'test.hdf5', 'chunk_size':2})
 
         with h5py.File(out_path) as f:
@@ -220,6 +222,15 @@ class TestPredict(unittest.TestCase):
             lps = f['log_probability']
             self.assertTrue(jnp.mean((lps[1:] - lps[:-1]) > 0) > 0.6,
                         msg=f"Expected log probability to increase on average with iteration, but got log probabilities of \n    {lps}\n differences of \n    {lps[1:] - lps[:-1]}")
+            
+            self.assertTrue(f['positions'].dtype == jnp.float64,
+                        msg=f"Enabled double precision. Expected float64 dtype, but got {f['positions'].dtype} dtype.")
+
+    
+    def tearDown(self):
+        if os.path.isfile('test.hdf5'):
+            print('Cleaning up...Removing `test.hdf5`')
+            os.remove('test.hdf5')
         
 if __name__ == '__main__':
     unittest.main()

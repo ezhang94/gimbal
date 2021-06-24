@@ -9,6 +9,105 @@ import numpy as onp
 import jax.numpy as jnp
 
 import h5py
+import yaml
+
+def load_skeleton(fpath):
+    """Load keypoint and parent specification defining skeletal stucture.
+
+    Parameters
+    ----------
+        fpath: file-like object, string, or pathlib.Path
+            .yml file to read from
+
+    Returns
+    -------
+        keypoint_names: str list, len K
+        parents: int list, len K
+
+    """
+    with open(fpath) as f:
+        config = yaml.load(f, Loader=yaml.SafeLoader)
+        skeleton = config['skeleton']
+
+        keypoint_names = list(skeleton.keys())
+        parent_names = list(skeleton.values())
+
+    _k_type = type(keypoint_names[0])
+    assert _k_type == type(parent_names[0]), \
+        f"Skeleton key/values must be same type. Received '{_k_type}', '{type(parent_names[0])}'."
+    assert isinstance(keypoint_names[0], (int, str)), \
+        f"Skeleton key/values must be int or string. Received '{_k_type}'."
+
+    if _k_type is str:
+        # Identify index of corresponding parent keypoint name
+        parents = [keypoint_names.index(name) for name in parent_names]
+    else:
+        # Create placeholder names for keypoints
+        keypoint_names = [f'k{i}' for i in range(len(keypoint_names))]
+        parents = parent_names
+
+    assert parents[0] == 0, \
+        f"Parent of root node should be itself. Received '{parents[0]}'."
+    return keypoint_names, parents
+
+def load_camera_parameters(fpath, cameras=[], mode='array'):
+    """Load camera parameters.
+
+    Parameters
+    ----------
+        fpath: str or tuple , path to HDF5 file with camera parameters
+        cameras: int list of cameras to load. optional
+            If none specified, load all cameras.
+            TODO: Allow selection by camera name (i.e. str list)
+        mode: str, one of {'dict', 'array'}
+            Specifies the return type of cparams (see below)
+
+    Returns
+    -------
+        cparams: dict of intrinsic and extrinsic camera matrices
+            If mode == 'dict', return dictionary of parameters with
+            keys 'instrinsic', 'rotation', and 'translation'
+            If mode == 'array', return matrix of shape (C, 3, 4)
+    """
+
+    if isinstance(fpath, str):
+        fpath = fpath
+        key = ''
+        assert isinstance(fpath, str)
+    elif isinstance(fpath, tuple):
+        if len(fpath) == 1:
+            fpath = fpath[0]
+            assert isinstance(fpath, str)
+        elif len(fpath) == 2:
+            fpath, key = fpath
+            assert isinstance(fpath, str)
+            assert isinstance(key, str)
+        else:
+            raise ValueError(f'Expect fpath tuple to consist of (file, key) pair, but got tuple of length {len(fpath)}.')    
+    else:
+        raise ValueError(f'Expected fpath to be str or (str, str) tuple, but got {type(fpath)}.')
+
+
+    # If no cameras specified, load all cameras
+    c_idxs = onp.s_[:] if not cameras else cameras
+
+    with h5py.File(fpath) as f:
+        intrinsic = f[key]['intrinsic'][c_idxs]
+        rotation = f[key]['rotation'][c_idxs]
+        translation = f[key]['translation'][c_idxs]
+
+    if mode == 'array':
+        # Camera projection matrix = [KR | Kt], shape (num_cameras, 3, 4)
+        KR = onp.einsum('...ij, ...jk -> ...ik', intrinsic, rotation)
+        Kt = onp.einsum('...ij, ...j -> ...i', intrinsic, translation)
+        cparams = onp.concatenate([KR, Kt[:,:,None]], axis=-1)
+    else:
+        cparams = {}
+        cparams['intrinsic'] = intrinsic
+        cparams['rotation'] = rotation
+        cparams['translation'] = translation
+
+    return cparams
 
 def save_parameters(file, params):
     """Save GIMBAL parameters dictionary to compressed .npz file.
@@ -65,48 +164,30 @@ def load_parameters(file, to_device_array=True):
 # Saving predictions
 # -------------------
 
-class SavePredictions():
-    """Base class for saving GIMBAL predictions"""
-    def __init__(self):
-        self._obj = None
-
-    @property
-    def obj(self,):
-        return self._obj
-
-    def __enter__(self,):
-        return self
-    
-    def __exit__(self, exc_type, exc_value, tb):
-        return
-
-    def update(self, samples):
-        """Update storage object with latest samples.
-
-        Parameters
-        ----------
-            samples: dict of lists of ndarrays
-        Returns
-        -------
-            None
-        """
-        raise NotImplementederror
-
-class SavePredictionsToHDF(SavePredictions):
-    def __init__(self, path, init_samples, max_iter=None,
+class SavePredictionsToHDF():
+    def __init__(self, path, init_samples,
+                 max_iter=None,chunk_size=None,
                  mode='w', hdf_kwargs={}):
         
         self.path = path
         self._obj = h5py.File(path, mode, **hdf_kwargs)
         
         for k,v in init_samples.items():
+            if isinstance(chunk_size, int):
+                chunks = (chunk_size, *v.shape)
+            else:
+                chunks = (max_iter, *v.shape)
             self._obj.create_dataset(k, (0, *v.shape), dtype=v.dtype,
                                   maxshape=(max_iter, *v.shape),
+                                  chunks=chunks,
                                   compression='gzip')
     
     @property
     def obj(self,):
         return self.path
+    
+    def __enter__(self,):
+        return self
     
     def __exit__(self,exc_type, exc_value, tb):
         if exc_type is not None:
@@ -115,33 +196,14 @@ class SavePredictionsToHDF(SavePredictions):
         self._obj.close()
         return
     
-    def update(self, samples):
+    def close(self):
+        self._obj.close()
+
+    def update(self, buffer):
         """Update HDF datasets with new samples."""
     
-        for k, v in samples.items():
+        for k, v in buffer.items():
             N = len(v)
             self._obj[k].resize(len(self._obj[k]) + N, axis=0)
             self._obj[k][-N:] = jnp.stack(v, axis=0)
-        return
-
-class SavePredictionsToDict(SavePredictions):
-    def __init__(self, init_samples):
-        self._obj = dict.fromkeys(init_samples.keys(), [])
-    
-    def __exit__(self, exc_type, exc_value, tb):
-        if exc_type is not None:
-            import traceback
-            traceback.print_exception(exc_type, exc_value, tb)
-        # Upon exit, stack all samples along first axis into single ndarray.
-        try:
-            for k, v in self._obj.items():
-                self._obj[k] = jnp.stack(v, axis=0)
-        except:
-            pass
-        return
-
-    def update(self, samples):
-        """Update dictionary with new samples."""
-        for k, v in samples.items():
-            self._obj[k].extend(v)
         return
