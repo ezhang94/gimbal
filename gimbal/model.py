@@ -1,6 +1,3 @@
-import jax.config
-jax.config.update("jax_enable_x64", True)
-
 import os
 import numpy as onp
 import jax.numpy as jnp
@@ -9,8 +6,6 @@ import jax.random as jr
 import mcmc
 import util_io
 
-from tqdm.auto import trange
-
 # =====================================================================
 
 def _fit_obs_error_parameters(positions, observations, camera_matrices):
@@ -18,8 +13,8 @@ def _fit_obs_error_parameters(positions, observations, camera_matrices):
 
     print('Fitting observation error parameters...')
 
-    fpath = os.path.join(os.environ['DATAPATH'],
-                         'gmm_obs_error-dlc2d_mu0_filtered.npz')
+    fpath = os.path.join(os.environ['HOME'],
+                         'data/gmm_obs_error-dlc2d_mu0_filtered.npz')
     with onp.load(fpath, 'r') as f:
         m_fitted = jnp.asarray(f['means'])
         k_fitted = jnp.asarray(f['sigmasqs'])
@@ -83,8 +78,8 @@ def _fit_pose_state_parameters(positions, parents, crf_keypoints,
     # TODO
     print('Fitting pose state parameters...')
 
-    fpath = os.path.join(os.environ['DATAPATH'],
-                         'directional_priors_filtered_s180_maxk200.npz')
+    fpath = os.path.join(os.environ['HOME'],
+                         'data/directional_priors_filtered_s180_maxk200.npz')
     
     with onp.load(fpath, 'r') as f:
         dir_priors_pis = jnp.asarray(f['pis'])
@@ -201,98 +196,3 @@ def fit(positions,
             print(f"WARNING: Unexpected parameter specification '{pkey}'. Skipping.")
 
     return params
-
-# =====================================================================
-
-def predict(seed, params, observations, init_positions=None,
-            num_mcmc_iterations=1000,
-            hmc_options={'init_step_size':1e-1, 'num_leapfrog_steps':1},
-            out_options={},
-            ):
-    """Predict latent variables from observations using MCMC sampling.
-
-    Parameters
-    ----------
-        seed: jax.random.PRNGKey
-        params: dict
-        observations: ndarray, shape (N, C, K, D_obs)
-        init_positions: None or ndarray, shape (N, K, D), optional
-            Initial guess of 3D positions. If None (default), initial
-            guess made from observations in mcmc.initialize
-        num_mcmc_iterations: int
-        hmc_options: dict, optional.
-            num_leapfrog_steps: Integration step size.
-            step_size:
-        out_options: dict, optional
-            If empty (default), samples are not saved. Else, samples are
-            saved to HDF5 according to the specified items:
-                path: str
-                chunk_size:
-                thinning: int, optional.
-                burnin: int, optional
-                variables: list, optional. default: [] (all)
-                save_hmc_results: bool, optional. default: False
-                    If True, save kernel results of HMC positions sampler at each iteration. Useful for tuning leapfro
-            default: {} (do not save)
-
-    Returns
-    -------
-    """
-
-    # Initialize
-    seed, init_seed = jr.split(seed, 2)
-
-    params = mcmc.initialize_parameters(params)
-    samples = mcmc.initialize(init_seed, params,
-                              observations, init_positions)
-
-    # Enable timing, if specified. Add appropriate key to `init_dict` to save.
-
-    # Enable chunked saving, if specified
-    init_dict = samples
-    if not out_options: # If no out options specified
-        Fout = util_io.SavePredictionsToDict(init_dict)
-        chunk_size = num_mcmc_iterations
-    else:
-        Fout = util_io.SavePredictionsToHDF(
-                    out_options['path'], init_dict,
-                    max_iter = num_mcmc_iterations,
-                    **out_options.get('hdf_kwargs', {}))
-        chunk_size = out_options.get('chunk_size', num_mcmc_iterations)
-
-    # Setup progress bar
-    pbar = trange(num_mcmc_iterations)
-    pbar.set_description("lp={:.2f}".format(samples['log_probability']))
-
-    buffer = {k: jnp.empty((chunk_size, *v.shape), dtype=v.dtype)
-              for k, v in init_dict.items()}
-    with Fout as out:
-        for itr in pbar:
-
-            samples, kernel_results = \
-                mcmc.step(jr.fold_in(seed, itr), params, observations, samples)
-
-            # ------------------------------------------------------------------
-            # Update the progress bar
-            pbar.set_description("lp={:.2f}".format(samples['log_probability']))
-            pbar.update(1)
-
-            # Save
-            for k, v in buffer.items():
-                buffer[k] = buffer[k].at[itr % chunk_size].set(samples[k])
-            
-            if (chunk_size is not None) and ((itr+1) % chunk_size == 0):
-                out.update(buffer)
-        
-        
-        # Store final chunk of samples, if needed
-        if (chunk_size is None) or (itr+1) % chunk_size != 0:
-            for k, v in buffer.items():
-                buffer[k] = buffer[k][:itr % chunk_size + 1]
-            
-            out.update(buffer)
-
-    return Fout.obj
-
-if __name__ == "__main__":
-    pass
