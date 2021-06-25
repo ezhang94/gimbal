@@ -8,6 +8,8 @@ GIMBAL employs a hierarchical von Mises-Fisher-Gaussian model (h-vMFG) to captur
 It admits a simple Monte Carlo Markov Chain (MCMC) algorithm for approximate Bayesian inference that
 produces posterior estimates and variances of 3D positions, joint directions, heading (relative to user-defined direction), and pose state.
 
+![](imgs/model_buildup.png)
+
 ## Installation
 GIMBAL uses Python 3.5 and above.
 It can run on both a CPU or a CUDA-enabled GPU (and associated drivers),
@@ -18,7 +20,7 @@ It relies primarily on
 
 The default requirements are targeted towards running on a CPU.
 GPU-specific instructions are only required for installing the `jax` package;
-please see JAX's [installation instructions](https://github.com/google/jax#installation)
+please see JAX's [installation guide](https://github.com/google/jax#installation)
 for the most recent details.
 
 ## Reference
