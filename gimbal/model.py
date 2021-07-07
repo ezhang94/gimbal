@@ -3,29 +3,86 @@ import numpy as onp
 import jax.numpy as jnp
 import jax.random as jr
 
-import mcmc
+from sklearn.mixture import GaussianMixture
+
+import util
 import util_io
 
 # =====================================================================
 
-def _fit_obs_error_parameters(positions, observations, camera_matrices):
-    # TODO
+def _fit_obs_error_parameters(positions, observations, camera_matrices,
+                              num_mixtures=2, 
+                             ):
+    """Estimate parameters of Gaussian model of observation error.
+
+    Initialization of parameters plays a significant role in the GaussianMixture
+    fitting procedure. In particular, assume that there is no bias in the mean,
+    and the covariance parameters between mixture distributions is distinct.
+
+    Parameters
+    ----------
+        positions: ndarray, shape (N, K, D)
+            Ground truth keypoint positions. May contain NaNs.
+        observations: ndarray, shape (N, C, K, D_obs)
+            Noisy and potentially corrupted observations
+        camera_matrices: ndarray, shape (C, D_obs+1, D+1)
+        num_mixtures: int
+            Number of mixtures to fit. Default: 2
+    """
 
     print('Fitting observation error parameters...')
 
-    fpath = os.path.join(os.environ['HOME'],
-                         'data/gmm_obs_error-dlc2d_mu0_filtered.npz')
-    with onp.load(fpath, 'r') as f:
-        m_fitted = jnp.asarray(f['means'])
-        k_fitted = jnp.asarray(f['sigmasqs'])
-        w_fitted = jnp.asarray(f['p_isOutlier'])
+    _, C, K, D_obs = observations.shape
+    M = num_mixtures
 
-    return dict(obs_outlier_probability=w_fitted,
+    positions_projected = onp.stack([
+        util.project(P, positions) for P in camera_matrices], axis=0)
+
+    # Initial guesses
+
+    # Allocate arrays
+    # Since there are only 2 mixtures, we only need to store P(is_outlier)
+    fitted_weights   = onp.empty[(C, K,)] 
+    fitted_means     = onp.empty([C, K, D_obs, M])
+    fitted_variances = onp.empty([C, K, D_obs])
+
+    for c in range (C):
+        for k in range(K):
+            obs_err = observations_error[:,c,k,:]
+            mask = ~onp.isnan(obs_err[...,0])
+
+            gmm = GaussianMixture(
+                        n_components=M,
+                        covariance_type='spherical',
+                        weights_init=[1-p_outlier[c,k], p_outlier[c,k]],
+                        means_init=onp.zeros((M,D_obs))
+                        precision_init=[1/omega_in**2, 1/omega_out**2],
+                        ).fit(obs_err[mask])
+
+            fitted_weights[c,k]   = gmm.weights_[-1]
+            fitted_means[c,k]     = gmm.means_.T
+            fitted_variances[c,k] = gmm.covariances_
+    
+    return dict(obs_outlier_probability=fitted_weights,
                 obs_outlier_location=0.,
-                obs_outlier_variance=k_fitted[...,1],
+                obs_outlier_variance=fitted_variances[...,1],
                 obs_inlier_location=0.,
-                obs_inlier_variance=k_fitted[...,0],
+                obs_inlier_variance=fitted_variances[...,0],
                 camera_matrices=camera_matrices)
+
+    # fpath = os.path.join(os.environ['HOME'],
+    #                      'data/gmm_obs_error-dlc2d_mu0_filtered.npz')
+    # with onp.load(fpath, 'r') as f:
+    #     m_fitted = jnp.asarray(f['means'])
+    #     k_fitted = jnp.asarray(f['sigmasqs'])
+    #     w_fitted = jnp.asarray(f['p_isOutlier'])
+
+    # return dict(obs_outlier_probability=w_fitted,
+    #             obs_outlier_location=0.,
+    #             obs_outlier_variance=k_fitted[...,1],
+    #             obs_inlier_location=0.,
+    #             obs_inlier_variance=k_fitted[...,0],
+    #             camera_matrices=camera_matrices)
 
 def _fit_skeletal_parameters(positions, parents, root_variance=1e8):
     """Estimate inter-keypoint distances and variances.
