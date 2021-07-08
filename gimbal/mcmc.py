@@ -17,11 +17,11 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 
 from ssm.messages import hmm_sample
 
-from util import (triangulate, project,
+from .util import (triangulate, project,
                   xyz_to_uv, uv_to_xyz, signed_angular_difference,
                   Rxy_mat, cartesian_to_polar,
                   children_of, tree_graph_laplacian, hvmfg_natural_parameter,)
-import util_io
+import .util_io
 
 def initialize_parameters(params,
                           pos_location_0=0., pos_variance_0=1e8,

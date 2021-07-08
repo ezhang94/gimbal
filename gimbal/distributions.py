@@ -5,7 +5,7 @@ import numpy as onp
 
 from tensorflow_probability.substrates import jax as tfp
 
-from util import (log_bessel_iv_asymptotic, log_sinh, coth, children_of)
+from .util import (log_bessel_iv_asymptotic, log_sinh, coth, children_of)
 
 CONCENTRATION_REGULARIZER = 1e-8
 VARIANCE_REGULARIZER = 1e-8

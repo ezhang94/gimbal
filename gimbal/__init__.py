@@ -1,3 +1,3 @@
 # Default imports
-from . import distributions
-from . import util
+from gimbal import util
+from gimbal import distributions

@@ -5,8 +5,8 @@ import jax.random as jr
 
 from sklearn.mixture import GaussianMixture
 
-import util
-import util_io
+import .util
+import .util_io
 
 # =====================================================================
 
