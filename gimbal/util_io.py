@@ -55,7 +55,7 @@ def load_camera_parameters(fpath, cameras=[], mode='array'):
 
     Parameters
     ----------
-        fpath: str or tuple , path to HDF5 file with camera parameters
+        fpath: str, path to HDF5 file with camera parameters
         cameras: int list of cameras to load. optional
             If none specified, load all cameras.
             TODO: Allow selection by camera name (i.e. str list)
@@ -70,31 +70,13 @@ def load_camera_parameters(fpath, cameras=[], mode='array'):
             If mode == 'array', return matrix of shape (C, 3, 4)
     """
 
-    if isinstance(fpath, str):
-        fpath = fpath
-        key = ''
-        assert isinstance(fpath, str)
-    elif isinstance(fpath, tuple):
-        if len(fpath) == 1:
-            fpath = fpath[0]
-            assert isinstance(fpath, str)
-        elif len(fpath) == 2:
-            fpath, key = fpath
-            assert isinstance(fpath, str)
-            assert isinstance(key, str)
-        else:
-            raise ValueError(f'Expect fpath tuple to consist of (file, key) pair, but got tuple of length {len(fpath)}.')    
-    else:
-        raise ValueError(f'Expected fpath to be str or (str, str) tuple, but got {type(fpath)}.')
-
-
     # If no cameras specified, load all cameras
     c_idxs = onp.s_[:] if not cameras else cameras
 
     with h5py.File(fpath) as f:
-        intrinsic = f[key]['intrinsic'][c_idxs]
-        rotation = f[key]['rotation'][c_idxs]
-        translation = f[key]['translation'][c_idxs]
+        intrinsic = f['camera_parameters']['intrinsic'][c_idxs]
+        rotation = f['camera_parameters']['rotation'][c_idxs]
+        translation = f['camera_parameters']['translation'][c_idxs]
 
     if mode == 'array':
         # Camera projection matrix = [KR | Kt], shape (num_cameras, 3, 4)

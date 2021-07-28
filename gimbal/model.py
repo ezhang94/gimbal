@@ -5,8 +5,8 @@ import jax.random as jr
 
 from sklearn.mixture import GaussianMixture
 
-import .util
-import .util_io
+from . import util
+from . import util_io
 
 # =====================================================================
 
@@ -55,7 +55,7 @@ def _fit_obs_error_parameters(positions, observations, camera_matrices,
                         n_components=M,
                         covariance_type='spherical',
                         weights_init=[1-p_outlier[c,k], p_outlier[c,k]],
-                        means_init=onp.zeros((M,D_obs))
+                        means_init=onp.zeros((M,D_obs)),
                         precision_init=[1/omega_in**2, 1/omega_out**2],
                         ).fit(obs_err[mask])
 

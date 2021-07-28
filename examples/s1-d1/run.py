@@ -12,8 +12,8 @@ SRC = os.path.join(os.environ['HOME'], 'gimbal/gimbal')
 sys.path.insert(0, SRC)
 
 import run
-import mcmc
-import util_io
+from . import mcmc
+from . import util_io
 
 OUTPUTPATH = os.environ['SCRATCH']
 PROJECTPATH = os.path.dirname(__file__)  # Project folder (where this script lives)
@@ -21,7 +21,7 @@ DATAPATH = PROJECTPATH  # Example data is stored in the project folder
 
 skeleton_path = os.path.join(PROJECTPATH, 'skeleton.yml')
 input_path = os.path.join(DATAPATH, 's1-d1-predictions.hdf5')
-camera_path = (input_path, 'camera_parameters')
+camera_path = input_path
 
 # ========================================================================
 # Load known camera calibration parameters
