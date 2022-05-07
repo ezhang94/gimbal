@@ -575,12 +575,17 @@ def sample_transition_matrix(seed, params, samples):
 
 # Cannot jit because smaple_state requires moving arrays to CPU
 # @jit
-def step(seed, params, observations, samples):
+def step(seed, params, observations, samples,
+         init_step_size=1e-1, num_leapfrog_steps=1):
+
     """Execute a single iteration of MCMC sampling."""
     seeds = jr.split(seed, 6)
     
-    positions, kernel_results = \
-                    sample_positions(seeds[0], params, observations, samples)
+    positions, kernel_results = sample_positions(
+                    seeds[0], params, observations, samples,
+                    init_step_size=init_step_size, 
+                    num_leapfrog_steps=num_leapfrog_steps)
+                    
     samples['positions'] = positions
     samples['hmc_log_accept_ratio'] = kernel_results.log_accept_ratio
     samples['hmc_proposed_gradients'] = \
@@ -676,7 +681,7 @@ def predict(seed, params, observations, init_positions=None,
     
     for itr in pbar:
         samples = \
-            step(jr.fold_in(seed, itr), params, observations, samples)
+            step(jr.fold_in(seed, itr), params, observations, samples, **hmc_options)
 
         # ------------------------------------------------------------------
         # Update the progress bar
