@@ -119,6 +119,29 @@ def triangulate(Ps, ys, camera_pairs=[]):
         Xs = Xs.at[i].set(triangulate_dlt(Ps[(c0,c1),:,:], ys[(c0,c1),...]))
     
     return jnp.median(Xs, axis=0)
+
+
+
+def opencv_triangulate(Ps, ys, camera_pairs=[]):
+    C = len(Ps)
+    batch_shape = ys.shape[1:-1]
+    if not camera_pairs:
+        camera_pairs = [(i,j) for i in range(C) for j in range(i+1, C)]
+    Xs = jnp.empty((len(camera_pairs), *batch_shape, 3))
+    for i, (c0, c1) in enumerate(camera_pairs):
+        Xs = Xs.at[i].set(opencv_triangulate_dlt(Ps[(c0,c1),:,:], ys[(c0,c1),...]))
+    return jnp.median(Xs, axis=0)
+
+
+def opencv_triangulate_dlt(Ps, ys):
+    import numpy as np, cv2
+    batch_shape = ys.shape[1:-1]
+    Ps = np.array(Ps)
+    ys = np.array(ys).reshape(2,-1,2)
+    X_hom = cv2.triangulatePoints(Ps[0],Ps[1],ys[0].T,ys[1].T)
+    X = (X_hom[:3] / X_hom[3]).T.reshape(*batch_shape,3)
+    return jnp.array(X)
+
     
 # =================================================================== 
 # Coordinate frames
