@@ -576,14 +576,14 @@ def sample_transition_matrix(seed, params, samples):
 # Cannot jit because smaple_state requires moving arrays to CPU
 # @jit
 def step(seed, params, observations, samples,
-         init_step_size=1e-1, num_leapfrog_steps=1):
+         step_size=1e-1, num_leapfrog_steps=1):
 
     """Execute a single iteration of MCMC sampling."""
     seeds = jr.split(seed, 6)
     
     positions, kernel_results = sample_positions(
                     seeds[0], params, observations, samples,
-                    init_step_size=init_step_size, 
+                    step_size=step_size, 
                     num_leapfrog_steps=num_leapfrog_steps)
                     
     samples['positions'] = positions
@@ -618,7 +618,7 @@ def step(seed, params, observations, samples,
 def predict(seed, params, observations, init_positions=None,
             num_mcmc_iterations=1000,
             enable_x64=False,
-            hmc_options={'init_step_size':1e-1, 'num_leapfrog_steps':1},
+            hmc_options={'step_size':1e-1, 'num_leapfrog_steps':1},
             out_options={},
             ):
     """Predict latent pose variables from observations using MCMC sampling.
