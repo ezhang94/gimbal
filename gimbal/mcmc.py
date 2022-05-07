@@ -9,8 +9,9 @@ from tqdm.auto import trange
 import jax.config
 import jax.numpy as jnp
 import jax.random as jr
-from jax import lax, jit, partial, vmap
+from jax import lax, jit, vmap
 from jax.scipy.special import logsumexp
+from functools import partial
 
 import tensorflow_probability.substrates.jax as tfp
 import tensorflow_probability.substrates.jax.distributions as tfd
